@@ -154,6 +154,66 @@ async function main() {
   const metrics = getOverviewMetrics();
   const todayStr = new Date().toISOString().split("T")[0];
 
+  // Direct argument mode: /budget-allowance 15, /budget-allowance daily 25,
+  // /budget-allowance off, /budget-allowance history, ...
+  const args = process.argv.slice(2).join(" ").trim().toLowerCase();
+  if (args.length > 0) {
+    if (args === "off" || args === "disable" || args === "unlimited") {
+      if (process.env.OPENCODE_SESSION_ID) {
+        state.disabledSessions[process.env.OPENCODE_SESSION_ID] = true;
+        saveState(state);
+        console.log(`✅ Disabled budget checks for session ${process.env.OPENCODE_SESSION_ID}`);
+      } else {
+        console.log(`⚠️ No OPENCODE_SESSION_ID set — cannot disable a specific session.`);
+      }
+    } else if (args === "history" || args === "audit") {
+      console.log(`Top-Up Audit History Log:`);
+      if (state.history.length === 0) {
+        console.log(`  (No top-up records found)`);
+      } else {
+        state.history.slice(-10).reverse().forEach((rec) => {
+          const date = new Date(rec.timestamp).toLocaleString();
+          console.log(`  • [${date}] Scope: ${rec.scope} | Type: ${rec.type} | Amount: $${rec.amount.toFixed(2)} | Session: ${rec.sessionId}`);
+        });
+      }
+    } else if (args.startsWith("daily ")) {
+      const amount = parseFloat(args.slice(6));
+      if (!isNaN(amount) && amount > 0) {
+        state.dailyTopUpUSD[todayStr] = (state.dailyTopUpUSD[todayStr] || 0) + amount;
+        state.history.push({
+          id: `cli_${Date.now()}`,
+          timestamp: Date.now(),
+          dateStr: todayStr,
+          sessionId: "GLOBAL_DAILY",
+          model: "CLI_MANUAL",
+          scope: "daily",
+          type: "cost",
+          amount,
+        });
+        saveState(state);
+        console.log(`✅ Added +$${amount.toFixed(2)} to daily budget allowance!`);
+      } else {
+        console.log(`❌ Invalid amount for "daily".`);
+      }
+    } else {
+      const amount = parseFloat(args);
+      if (!isNaN(amount) && amount > 0) {
+        if (process.env.OPENCODE_SESSION_ID) {
+          state.sessionCostLimits[process.env.OPENCODE_SESSION_ID] = { limit: amount, model: "CLI_MANUAL" };
+          delete state.disabledSessions[process.env.OPENCODE_SESSION_ID];
+          saveState(state);
+          console.log(`✅ Locked session allowance cap at $${amount.toFixed(2)} for session ${process.env.OPENCODE_SESSION_ID}`);
+        } else {
+          console.log(`⚠️ No OPENCODE_SESSION_ID set — cannot set a session cap.`);
+        }
+      } else {
+        console.log(`❌ Unknown argument: "${args}"`);
+      }
+    }
+    if (process.stdout.isTTY) process.stdout.write(ENABLE_MOUSE);
+    return;
+  }
+
   console.clear();
   console.log(`\x1b[1m\x1b[36m================================================================\x1b[0m`);
   console.log(`💳 \x1b[1mOPENCODE BUDGET ALLOWANCE CLI\x1b[0m \x1b[2m(100% Offline - 0 LLM Tokens Burned)\x1b[0m`);
