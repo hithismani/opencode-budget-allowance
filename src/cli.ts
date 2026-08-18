@@ -279,4 +279,9 @@ async function main() {
   if (process.stdout.isTTY) process.stdout.write(ENABLE_MOUSE);
 }
 
-main().catch(console.error);
+// Only run the interactive menu when this file is executed directly
+// (e.g. `bun run cli.ts`). opencode imports every .ts file under
+// plugins/, and without this guard the menu would render on launch.
+if (import.meta.main) {
+  main().catch(console.error);
+}

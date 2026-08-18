@@ -1,4 +1,4 @@
-import type { Plugin } from "@opencode-ai/plugin";
+import type { Plugin, PluginModule } from "@opencode-ai/plugin";
 import { Database } from "bun:sqlite";
 import fs from "fs";
 import path from "path";
@@ -152,7 +152,9 @@ export function getOverviewMetrics() {
 // PLUGIN MAIN EXPORT
 // ============================================================================
 
-export default (async ({ client }, options: BudgetOptions = {}) => {
+export default {
+  id: "opencode-budget-allowance",
+  server: (async ({ client }: any, options: BudgetOptions = {}) => {
   const {
     defaultDailyLimitUSD = Infinity,    // NO DEFAULT CAP unless explicitly set
     defaultSessionLimitUSD = Infinity,  // NO DEFAULT CAP unless explicitly set
@@ -166,7 +168,7 @@ export default (async ({ client }, options: BudgetOptions = {}) => {
   } = options;
 
   return {
-    "chat.params": async (params) => {
+    "chat.params": async (params: any) => {
       const sessionId = params.sessionID || (params as any).sessionId || "";
       const rawModel = params.model;
       const modelName = typeof rawModel === "string" ? rawModel : (rawModel as any)?.id || "Active Model";
@@ -355,4 +357,5 @@ export default (async ({ client }, options: BudgetOptions = {}) => {
       }
     },
   };
-}) satisfies Plugin;
+  }),
+} satisfies PluginModule;
