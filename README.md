@@ -1,10 +1,39 @@
 # opencode-budget-allowance
 
 [![GitHub Repository](https://img.shields.io/badge/GitHub-hithismani%2Fopencode--budget--allowance-blue)](https://github.com/hithismani/opencode-budget-allowance)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Standalone session and daily budget allowance plugin for **opencode** created by [@hithismani](https://github.com/hithismani).
 
-## 🌟 Features
+---
+
+## 🏛️ How Costing & Token Tracking Works (Native Opencode SQLite Engine)
+
+**Important:** This plugin **does NOT calculate token prices, parse model pricing tables, or guess token usage manually**. 
+
+Opencode **natively calculates exact token counts and $ USD costs on every turn** and records them directly into its native SQLite database:
+
+📍 **Database Path:** `~/.local/share/opencode/opencode.db`  
+📊 **Table:** `session`
+
+```sql
+SELECT 
+  cost,                -- Native $ USD cost calculated per turn by Opencode
+  tokens_input,        -- Input prompt tokens
+  tokens_output,       -- Generated output tokens
+  tokens_cache_read,   -- Prompt cache hits
+  tokens_cache_write   -- Prompt cache writes
+FROM session WHERE id = ?
+```
+
+### Why This Architecture Is Rock-Solid:
+* **Zero Latency Overhead:** Reads directly from SQLite in non-blocking WAL mode ($< 1\text{ms}$ query latency).
+* **Single Source of Truth:** Operates on the exact same ground-truth numbers that opencode tracks natively.
+* **No Pricing Maintenance:** Never worry about updating model rates or tokenizers when provider prices change.
+
+---
+
+## 🌟 Key Features
 
 * **Default Behavior on Install:** Installs as **Unlimited (`Infinity`)** by default. No unexpected budget blocks happen unless you explicitly set caps in `opencode.json` or via `/budget-allowance`!
 * **Override Loop Fix (Prompt Bypassing):** When a limit is hit, prompts containing `budget-allowance`, `/budget`, `override`, `disable budget`, or `off` are **never blocked**, so you can seamlessly talk to opencode to adjust or disable your budget!
@@ -29,7 +58,7 @@ Standalone session and daily budget allowance plugin for **opencode** created by
 
 ## 🚀 Installation & Setup
 
-### Option 1: Global Setup (All Projects)
+### Option A: Global Setup (All Projects)
 
 Copy the plugin & command files into your global opencode config:
 
@@ -58,29 +87,9 @@ Then configure `~/.config/opencode/opencode.json`:
 }
 ```
 
-### Option 2: Project Drop-In Auto-Discovery
+### Option B: Project Drop-In Auto-Discovery
 
 Copy `src/budget.ts` into any project's `.opencode/plugins/` directory. Opencode automatically discovers and loads it without editing any JSON files!
-
----
-
-## 🏛️ Architecture & SQLite Costings Dependency
-
-The plugin relies on opencode's native SQLite costings table located at:
-
-`~/.local/share/opencode/opencode.db` -> **`session` table**
-
-```sql
-SELECT 
-  cost,                -- Calculated $ USD cost per turn
-  tokens_input,        -- Input prompt tokens
-  tokens_output,       -- Generated output tokens
-  tokens_cache_read,   -- Prompt cache hits
-  tokens_cache_write   -- Prompt cache writes
-FROM session WHERE id = ?
-```
-
-By querying opencode's native costings table in read-only WAL mode, reads complete in $< 1\text{ms}$ with zero API calls or manual tokenizer pricing tables required.
 
 ---
 
@@ -88,3 +97,19 @@ By querying opencode's native costings table in read-only WAL mode, reads comple
 
 Active overrides and top-up audit histories are saved at:
 `~/.config/opencode/budget-overrides.json`
+
+If you ever want to reset all limits manually, simply delete or edit that file!
+
+---
+
+## ⚠️ Disclaimer & Warranty Notice
+
+**THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.** 
+
+This plugin relies on the cost estimates and token metrics logged by opencode in its local SQLite database. Actual API provider billing (Anthropic, OpenAI, Vertex AI, OpenRouter, etc.) may vary based on provider discounts, cache rates, or latency. The authors and contributors shall not be held liable for any unexpected API charges, overages, or financial losses resulting from the use or misuse of this software. Always monitor your LLM provider dashboards directly.
+
+---
+
+## 📜 License
+
+Distributed under the [MIT License](LICENSE).
