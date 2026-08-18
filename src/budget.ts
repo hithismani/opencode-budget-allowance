@@ -14,8 +14,8 @@ export interface BudgetOptions {
   defaultDailyTokenLimit?: number;     // Defaults to Infinity (Unlimited unless set)
   defaultSessionTokenLimit?: number;   // Defaults to Infinity (Unlimited unless set)
   compactAtInputTokens?: number;       // Auto-compaction input token threshold (default: 120,000)
-  modelCostBudgets?: Record<string, number>;     // Per-model cost limits { "fable-5": 10.0 }
-  modelTokenBudgets?: Record<string, number>;    // Per-model token limits { "fable-5": 200000 }
+  modelCostBudgets?: Record<string, number>;  // Per-model default cost limits { "fable-5": 10.0 }
+  modelTokenBudgets?: Record<string, number>; // Per-model default token limits { "fable-5": 200000 }
   providerCostBudgets?: Record<string, number>;  // Per-provider cost limits { "anthropic": 20.0, "google-vertex": 5.0 }
   providerTokenBudgets?: Record<string, number>; // Per-provider token limits { "anthropic": 500000 }
 }
@@ -46,6 +46,7 @@ export interface BudgetState {
 
 export const dbPath = path.join(os.homedir(), ".local/share/opencode/opencode.db");
 export const statePath = path.join(os.homedir(), ".config/opencode/budget-overrides.json");
+export const cliPath = path.join(os.homedir(), ".config/opencode/plugins/cli.ts");
 
 // Compact number formatter (610k, 1.2M)
 export function formatK(num: number): string {
@@ -335,6 +336,8 @@ export default (async ({ client }, options: BudgetOptions = {}) => {
         }
       );
 
+      const cliCmd = `bun run ${cliPath}`;
+
       // =======================================================================
       // CHECK 1: DAILY COST CEILING
       // =======================================================================
@@ -345,7 +348,7 @@ export default (async ({ client }, options: BudgetOptions = {}) => {
           `State Overrides File: ${statePath}\n\n` +
           `To fix or continue talking:\n` +
           `  1. Run slash command: /budget-allowance daily 25 (or /budget-allowance off)\n` +
-          `  2. OR run the offline CLI tool: bun run /path/to/opencode-budget-allowance/src/cli.ts\n`
+          `  2. OR run offline CLI tool: ${cliCmd}\n`
         );
       }
 
@@ -359,7 +362,7 @@ export default (async ({ client }, options: BudgetOptions = {}) => {
           `State Overrides File: ${statePath}\n\n` +
           `To fix or continue talking:\n` +
           `  1. Run slash command: /budget-allowance 2m (or /budget-allowance off)\n` +
-          `  2. OR run the offline CLI tool: bun run /path/to/opencode-budget-allowance/src/cli.ts\n`
+          `  2. OR run offline CLI tool: ${cliCmd}\n`
         );
       }
 
@@ -373,7 +376,7 @@ export default (async ({ client }, options: BudgetOptions = {}) => {
           `State Overrides File: ${statePath}\n\n` +
           `To fix or continue talking:\n` +
           `  1. Run slash command: /budget-allowance 15 (or /budget-allowance off)\n` +
-          `  2. OR run the offline CLI tool: bun run /path/to/opencode-budget-allowance/src/cli.ts\n`
+          `  2. OR run offline CLI tool: ${cliCmd}\n`
         );
       }
 
@@ -387,7 +390,7 @@ export default (async ({ client }, options: BudgetOptions = {}) => {
           `State Overrides File: ${statePath}\n\n` +
           `To fix or continue talking:\n` +
           `  1. Run slash command: /budget-allowance 500k (or /budget-allowance off)\n` +
-          `  2. OR run the offline CLI tool: bun run /path/to/opencode-budget-allowance/src/cli.ts\n`
+          `  2. OR run offline CLI tool: ${cliCmd}\n`
         );
       }
 
