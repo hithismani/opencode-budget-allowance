@@ -297,17 +297,22 @@ export function findMatchingLimit(
 // BUDGET LIMIT CHECKER
 // ============================================================================
 
-export function checkBudgetExceeded(
+export interface BudgetCheckStatus {
+  hardStopReason: string | null;
+  warningReason: string | null;
+}
+
+export function checkBudgetStatus(
   sessionId: string,
   modelName: string,
   providerId: string,
   modelId: string,
   fullModelKey: string,
   options: BudgetOptions
-): string | null {
+): BudgetCheckStatus {
   const state = loadState();
-  if (state.globalDisabled === true) return null;
-  if (sessionId && state.disabledSessions[sessionId] === true) return null;
+  if (state.globalDisabled === true) return { hardStopReason: null, warningReason: null };
+  if (sessionId && state.disabledSessions[sessionId] === true) return { hardStopReason: null, warningReason: null };
 
   const todayStr = new Date().toISOString().split("T")[0];
   const {
@@ -351,7 +356,7 @@ export function checkBudgetExceeded(
     effectiveDailyCostLimit === Infinity &&
     effectiveDailyTokenLimit === Infinity
   ) {
-    return null;
+    return { hardStopReason: null, warningReason: null };
   }
 
   const startOfDayMs = new Date().setHours(0, 0, 0, 0);
@@ -385,20 +390,49 @@ export function checkBudgetExceeded(
     { dailyCost: 0, dailyTokens: 0, sessionCost: 0, sessionTotalTokens: 0 }
   );
 
+  let hardStopReason: string | null = null;
+  let warningReason: string | null = null;
+
+  // 1. Check Hard Stops (100% threshold reached or exceeded)
   if (effectiveDailyCostLimit !== Infinity && dbMetrics.dailyCost >= effectiveDailyCostLimit) {
-    return `Daily spend limit reached ($${dbMetrics.dailyCost.toFixed(2)} / Cap $${effectiveDailyCostLimit.toFixed(2)})`;
-  }
-  if (effectiveDailyTokenLimit !== Infinity && dbMetrics.dailyTokens >= effectiveDailyTokenLimit) {
-    return `Daily token ceiling reached (${formatK(dbMetrics.dailyTokens)} / Ceiling ${formatK(effectiveDailyTokenLimit)})`;
-  }
-  if (sessionId && baseSessionCostCap !== Infinity && dbMetrics.sessionCost >= baseSessionCostCap) {
-    return `Session cost limit reached for ${modelName || "active model"} ($${dbMetrics.sessionCost.toFixed(2)} / Limit $${baseSessionCostCap.toFixed(2)})`;
-  }
-  if (sessionId && baseSessionTokenCap !== Infinity && dbMetrics.sessionTotalTokens >= baseSessionTokenCap) {
-    return `Session token limit reached for ${modelName || "active model"} (${formatK(dbMetrics.sessionTotalTokens)} / Limit ${formatK(baseSessionTokenCap)})`;
+    hardStopReason = `Daily cost limit reached ($${dbMetrics.dailyCost.toFixed(2)} / Cap $${effectiveDailyCostLimit.toFixed(2)})`;
+  } else if (effectiveDailyTokenLimit !== Infinity && dbMetrics.dailyTokens >= effectiveDailyTokenLimit) {
+    hardStopReason = `Daily token ceiling reached (${formatK(dbMetrics.dailyTokens)} / Ceiling ${formatK(effectiveDailyTokenLimit)})`;
+  } else if (sessionId && baseSessionCostCap !== Infinity && dbMetrics.sessionCost >= baseSessionCostCap) {
+    hardStopReason = `Session cost limit reached for ${modelName || "active model"} ($${dbMetrics.sessionCost.toFixed(2)} / Limit $${baseSessionCostCap.toFixed(2)})`;
+  } else if (sessionId && baseSessionTokenCap !== Infinity && dbMetrics.sessionTotalTokens >= baseSessionTokenCap) {
+    hardStopReason = `Session token limit reached for ${modelName || "active model"} (${formatK(dbMetrics.sessionTotalTokens)} / Limit ${formatK(baseSessionTokenCap)})`;
   }
 
-  return null;
+  // 2. Check Warnings (90% threshold reached, but not yet 100%)
+  if (!hardStopReason) {
+    if (effectiveDailyCostLimit !== Infinity && dbMetrics.dailyCost >= 0.9 * effectiveDailyCostLimit) {
+      const pct = ((dbMetrics.dailyCost / effectiveDailyCostLimit) * 100).toFixed(1);
+      warningReason = `Daily cost at ${pct}% ($${dbMetrics.dailyCost.toFixed(2)} / Cap $${effectiveDailyCostLimit.toFixed(2)})`;
+    } else if (effectiveDailyTokenLimit !== Infinity && dbMetrics.dailyTokens >= 0.9 * effectiveDailyTokenLimit) {
+      const pct = ((dbMetrics.dailyTokens / effectiveDailyTokenLimit) * 100).toFixed(1);
+      warningReason = `Daily token usage at ${pct}% (${formatK(dbMetrics.dailyTokens)} / Ceiling ${formatK(effectiveDailyTokenLimit)})`;
+    } else if (sessionId && baseSessionCostCap !== Infinity && dbMetrics.sessionCost >= 0.9 * baseSessionCostCap) {
+      const pct = ((dbMetrics.sessionCost / baseSessionCostCap) * 100).toFixed(1);
+      warningReason = `Session cost at ${pct}% for ${modelName || "active model"} ($${dbMetrics.sessionCost.toFixed(2)} / Limit $${baseSessionCostCap.toFixed(2)})`;
+    } else if (sessionId && baseSessionTokenCap !== Infinity && dbMetrics.sessionTotalTokens >= 0.9 * baseSessionTokenCap) {
+      const pct = ((dbMetrics.sessionTotalTokens / baseSessionTokenCap) * 100).toFixed(1);
+      warningReason = `Session token usage at ${pct}% for ${modelName || "active model"} (${formatK(dbMetrics.sessionTotalTokens)} / Limit ${formatK(baseSessionTokenCap)})`;
+    }
+  }
+
+  return { hardStopReason, warningReason };
+}
+
+export function checkBudgetExceeded(
+  sessionId: string,
+  modelName: string,
+  providerId: string,
+  modelId: string,
+  fullModelKey: string,
+  options: BudgetOptions
+): string | null {
+  return checkBudgetStatus(sessionId, modelName, providerId, modelId, fullModelKey, options).hardStopReason;
 }
 
 // ============================================================================
@@ -482,7 +516,7 @@ export default {
           undefined
         );
 
-        const blockReason = checkBudgetExceeded(
+        const { hardStopReason, warningReason } = checkBudgetStatus(
           sessionId,
           displayName,
           providerId,
@@ -491,18 +525,24 @@ export default {
           options
         );
 
-        if (blockReason) {
+        if (hardStopReason) {
           output.system.push(
-            `🚨 [BUDGET LIMIT REACHED: ${blockReason}]\n` +
-            `The user has reached their budget cap. You MUST inform them politely about the active spend and budget cap.\n` +
-            `You MUST decline performing code generation, file editing, or project tasks until the budget is adjusted.\n` +
-            `Inform the user they can:\n` +
-            `  • Increase session limit: e.g. /budget 25 or /budget 1m\n` +
-            `  • Disable limit for this session: /budget off\n` +
-            `  • Disable all limits globally: /budget off global\n` +
-            `  • Add daily allowance: /budget daily 25\n` +
-            `  • Or use the offline terminal CLI: bun run ~/.config/opencode/plugins/cli.ts\n` +
-            `You CAN and MUST execute budget tools (budget_set_limit, budget_disable, budget_enable, budget_get_status) if the user asks you to adjust or remove their budget.`
+            `🛑 [BUDGET LIMIT EXCEEDED: 100% HARD STOP - ${hardStopReason}]\n` +
+            `The user has reached 100% of their budget limit.\n` +
+            `You MUST immediately STOP all work, code generation, file editing, and tool execution.\n` +
+            `You MUST state clearly that the budget limit has been reached (100% hard stop) and cite that the user must use the offline terminal CLI to adjust, top-up, or disable their budget allowance:\n` +
+            `  bun run ~/.config/opencode/plugins/cli.ts\n` +
+            `Do NOT perform any coding or project tasks until the budget is updated via the CLI.`
+          );
+        } else if (warningReason) {
+          output.system.push(
+            `⚠️ [BUDGET WARNING: 90% THRESHOLD REACHED - ${warningReason}]\n` +
+            `The user has reached 90% or more of their budget allowance.\n` +
+            `You MUST proactively warn the user about their current spend and that they are approaching their limit (${warningReason}).\n` +
+            `You MUST ask the user what they would like to do before continuing:\n` +
+            `  1. Continue working until the 100% hard stop is reached\n` +
+            `  2. Increase or adjust the budget limit using the offline CLI (bun run ~/.config/opencode/plugins/cli.ts) or /budget command\n` +
+            `  3. Disable budget limits for this session (/budget off)`
           );
         } else {
           const parts: string[] = [];
@@ -524,7 +564,7 @@ export default {
         }
       },
 
-      // Intercept modifying tools if budget is exceeded
+      // Intercept modifying tools if budget is exceeded (100% hard stop)
       "tool.execute.before": async (input: any) => {
         // Never block budget management tools
         if (input?.tool?.startsWith("budget_")) {
@@ -536,7 +576,7 @@ export default {
         if (state.globalDisabled === true) return;
         if (sessionId && state.disabledSessions[sessionId] === true) return;
 
-        const blockReason = checkBudgetExceeded(
+        const { hardStopReason } = checkBudgetStatus(
           sessionId,
           "active model",
           "",
@@ -545,10 +585,11 @@ export default {
           options
         );
 
-        if (blockReason) {
+        if (hardStopReason) {
           throw new Error(
-            `[Budget Exceeded] Execution of tool '${input.tool}' is blocked because ${blockReason}.\n` +
-            `To continue, adjust your budget with /budget <amount>, /budget off, or /budget off global.`
+            `[Budget Limit Reached: 100% HARD STOP] Execution of tool '${input.tool}' is blocked because ${hardStopReason}.\n` +
+            `All tool actions are stopped. Please use the offline terminal CLI to adjust your budget or disable limits:\n` +
+            `  bun run ~/.config/opencode/plugins/cli.ts`
           );
         }
       },

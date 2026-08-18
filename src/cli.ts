@@ -272,6 +272,67 @@ function printStatusOverview(state: BudgetState, metrics: ReturnType<typeof getO
   console.log(`\n🖥️  \x1b[2mRun \x1b[0m\x1b[33mbun run ~/.config/opencode/plugins/cli.ts\x1b[0m\x1b[2m in terminal for full interactive menu.\x1b[0m\n`);
 }
 
+async function performUpdate() {
+  console.log(`\n🔄 Updating opencode-budget-allowance plugin...`);
+  try {
+    const globalPluginPath = path.join(os.homedir(), ".config/opencode/plugins/budget.ts");
+    const globalCliPath = path.join(os.homedir(), ".config/opencode/plugins/cli.ts");
+    const globalCmdDir = path.join(os.homedir(), ".config/opencode/command");
+    const globalCmdsDir = path.join(os.homedir(), ".config/opencode/commands");
+
+    fs.mkdirSync(path.dirname(globalPluginPath), { recursive: true });
+    fs.mkdirSync(globalCmdDir, { recursive: true });
+    fs.mkdirSync(globalCmdsDir, { recursive: true });
+
+    // Clean up deprecated command files
+    fs.rmSync(path.join(globalCmdDir, "allocate-budget.md"), { force: true });
+    fs.rmSync(path.join(globalCmdsDir, "allocate-budget.md"), { force: true });
+    fs.rmSync(path.join(globalCmdsDir, "budget-allowance.md"), { force: true });
+    fs.rmSync(path.join(globalCmdDir, "budget-allowance.md"), { force: true });
+
+    const currentFileDir = path.dirname(import.meta.url.replace("file://", ""));
+    const repoDir = path.resolve(currentFileDir, "..");
+    const isGitRepo = fs.existsSync(path.join(repoDir, ".git")) && fs.existsSync(path.join(repoDir, "src/budget.ts"));
+
+    if (isGitRepo) {
+      console.log(`📦 Updating from git repository at ${repoDir}...`);
+      try {
+        execSync("git pull origin main", { cwd: repoDir, stdio: "inherit" });
+      } catch (e: any) {
+        console.log(`⚠️ Git pull failed, syncing local files as-is: ${e.message}`);
+      }
+      fs.copyFileSync(path.join(repoDir, "src/budget.ts"), globalPluginPath);
+      fs.copyFileSync(path.join(repoDir, "src/cli.ts"), globalCliPath);
+      if (fs.existsSync(path.join(repoDir, "command/budget.md"))) {
+        fs.copyFileSync(path.join(repoDir, "command/budget.md"), path.join(globalCmdDir, "budget.md"));
+        fs.copyFileSync(path.join(repoDir, "command/budget.md"), path.join(globalCmdsDir, "budget.md"));
+      }
+    } else {
+      console.log(`⬇️ Downloading latest version from GitHub...`);
+      const baseUrl = "https://raw.githubusercontent.com/hithismani/opencode-budget-allowance/main";
+
+      const budgetRes = await fetch(`${baseUrl}/src/budget.ts`);
+      if (!budgetRes.ok) throw new Error(`Failed to fetch budget.ts: ${budgetRes.statusText}`);
+      fs.writeFileSync(globalPluginPath, await budgetRes.text());
+
+      const cliRes = await fetch(`${baseUrl}/src/cli.ts`);
+      if (!cliRes.ok) throw new Error(`Failed to fetch cli.ts: ${cliRes.statusText}`);
+      fs.writeFileSync(globalCliPath, await cliRes.text());
+
+      const cmdRes = await fetch(`${baseUrl}/command/budget.md`);
+      if (cmdRes.ok) {
+        const cmdText = await cmdRes.text();
+        fs.writeFileSync(path.join(globalCmdDir, "budget.md"), cmdText);
+        fs.writeFileSync(path.join(globalCmdsDir, "budget.md"), cmdText);
+      }
+    }
+
+    console.log(`\x1b[32m✅ Plugin and /budget command updated successfully to ~/.config/opencode/!\x1b[0m\n`);
+  } catch (err: any) {
+    console.error(`❌ Update failed: ${err.message}\n`);
+  }
+}
+
 // ============================================================================
 // CLI WRAPPER AROUND TS BUDGET ENGINE
 // ============================================================================

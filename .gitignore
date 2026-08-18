@@ -1,4 +1,5 @@
-# Agent tooling state (Command Code session/taste files)
+node_modules/
+*.txt
 .commandcode/
 
 # opencode plugin state (may contain local secrets/session data)
