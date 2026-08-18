@@ -7,6 +7,8 @@ COMMAND_DIR="$CONFIG_DIR/command"
 
 mkdir -p "$PLUGINS_DIR" "$COMMAND_DIR"
 
+# Always replace managed files so a reinstall gets the latest versions and
+# never leaves stale files behind.
 rm -f "$PLUGINS_DIR/budget.ts" "$PLUGINS_DIR/cli.ts" "$COMMAND_DIR/budget-allowance.md"
 
 REPO_RAW="https://raw.githubusercontent.com/hithismani/opencode-budget-allowance/main"
@@ -17,6 +19,13 @@ REPO_RAW="https://raw.githubusercontent.com/hithismani/opencode-budget-allowance
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" && pwd)"
 
 if [ -f "$SCRIPT_DIR/src/budget.ts" ]; then
+  # Running from a clone: pull latest first so a reinstall never copies stale code.
+  if [ -d "$SCRIPT_DIR/.git" ]; then
+    echo "🔄 Pulling latest changes in local clone..."
+    if ! git -C "$SCRIPT_DIR" pull --ff-only -q; then
+      echo "⚠️  git pull failed — continuing with local files as-is."
+    fi
+  fi
   SRC_DIR="$SCRIPT_DIR"
   echo "📦 Installing from local clone: $SRC_DIR"
 else
@@ -37,20 +46,24 @@ cp "$SRC_DIR/command/budget-allowance.md" "$COMMAND_DIR/budget-allowance.md"
 echo "✅ Copied plugin files to $PLUGINS_DIR"
 echo "✅ Copied slash command to $COMMAND_DIR"
 
-CONFIG_FILE="$CONFIG_DIR/opencode.json"
-if [ ! -f "$CONFIG_FILE" ] && [ -f "$CONFIG_DIR/opencode.jsonc" ]; then
-  CONFIG_FILE="$CONFIG_DIR/opencode.jsonc"
-fi
-
 PLUGIN_ABS_PATH="$PLUGINS_DIR/budget.ts"
 
-node -e "
+patch_config() {
+  local file="$1"
+  node -e "
 const fs = require('fs');
-const path = '$CONFIG_FILE';
+const path = '$file';
 let content = {};
 if (fs.existsSync(path)) {
-  try { content = JSON.parse(fs.readFileSync(path, 'utf8')); } catch(e){}
+  try { content = JSON.parse(fs.readFileSync(path, 'utf8')); }
+  catch (e) {
+    // Never rewrite a file we can't parse (e.g. jsonc with comments) —
+    // that would destroy the user's config.
+    console.log('⚠️  Skipping ' + path + ' (not strict JSON — edit it manually if needed)');
+    process.exit(0);
+  }
 }
+content = content || {};
 content['\$schema'] = content['\$schema'] || 'https://opencode.ai/config.json';
 content.plugin = content.plugin || [];
 
@@ -59,21 +72,40 @@ const hasPlugin = content.plugin.some(p => (Array.isArray(p) ? p[0] : p) === plu
 
 if (!hasPlugin) {
   content.plugin.push([pluginPath, {}]);
-  fs.writeFileSync(path, JSON.stringify(content, null, 2));
-  console.log('✅ Auto-patched ' + path + ' with opencode-budget-allowance plugin!');
 } else {
-  // If the plugin was previously registered with hardcoded budgets, drop them
-  // so no caps are set unless the user explicitly configures them.
+  // Remove only the budgets the installer previously injected. Any other
+  // options the user set themselves are preserved across reinstalls.
+  const INJECTED_KEYS = ['compactAtInputTokens', 'modelCostBudgets', 'modelTokenBudgets', 'providerCostBudgets', 'providerTokenBudgets'];
   content.plugin = content.plugin.map(p => {
     if ((Array.isArray(p) ? p[0] : p) !== pluginPath) return p;
-    return Array.isArray(p) ? [p[0], {}] : [p, {}];
+    const entry = Array.isArray(p) ? p : [p];
+    const opts = (entry[1] && typeof entry[1] === 'object') ? { ...entry[1] } : {};
+    for (const k of INJECTED_KEYS) delete opts[k];
+    return [entry[0], opts];
   });
-  fs.writeFileSync(path, JSON.stringify(content, null, 2));
-  console.log('✅ Stripped default budgets from ' + path + ' (no caps unless you set them)');
 }
+fs.writeFileSync(path, JSON.stringify(content, null, 2));
+console.log('✅ Patched ' + path + ' (no budget caps set)');
 "
+}
+
+# Patch EVERY config file that exists so a reinstall never leaves a stale
+# entry or stale budgets in one of them. opencode reads both.
+PATCHED=0
+if [ -f "$CONFIG_DIR/opencode.json" ]; then
+  patch_config "$CONFIG_DIR/opencode.json"
+  PATCHED=1
+fi
+if [ -f "$CONFIG_DIR/opencode.jsonc" ]; then
+  patch_config "$CONFIG_DIR/opencode.jsonc"
+  PATCHED=1
+fi
+if [ "$PATCHED" = "0" ]; then
+  patch_config "$CONFIG_DIR/opencode.json"
+fi
 
 echo ""
 echo "🎉 opencode-budget-allowance installation complete!"
 echo "No budget limits are set by default."
+echo "Restart opencode to load the updated plugin and /budget-allowance command."
 echo "To set a session or daily limit, run: /budget-allowance 15 (or run 'bun run ~/.config/opencode/plugins/cli.ts')"
