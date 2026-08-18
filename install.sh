@@ -4,12 +4,14 @@ set -e
 CONFIG_DIR="$HOME/.config/opencode"
 PLUGINS_DIR="$CONFIG_DIR/plugins"
 COMMAND_DIR="$CONFIG_DIR/command"
+COMMANDS_DIR="$CONFIG_DIR/commands"
 
-mkdir -p "$PLUGINS_DIR" "$COMMAND_DIR"
+mkdir -p "$PLUGINS_DIR" "$COMMAND_DIR" "$COMMANDS_DIR"
 
-# Always replace managed files so a reinstall gets the latest versions and
-# never leaves stale files behind.
-rm -f "$PLUGINS_DIR/budget.ts" "$PLUGINS_DIR/cli.ts" "$COMMAND_DIR/budget-allowance.md"
+# Always clean up managed files and deprecated command names
+rm -f "$PLUGINS_DIR/budget.ts" "$PLUGINS_DIR/cli.ts"
+rm -f "$COMMAND_DIR/budget-allowance.md" "$COMMAND_DIR/allocate-budget.md" "$COMMAND_DIR/budget.md"
+rm -f "$COMMANDS_DIR/budget-allowance.md" "$COMMANDS_DIR/allocate-budget.md" "$COMMANDS_DIR/budget.md"
 
 REPO_RAW="https://raw.githubusercontent.com/hithismani/opencode-budget-allowance/main"
 
@@ -22,7 +24,7 @@ if [ -f "$SCRIPT_DIR/src/budget.ts" ]; then
   # Running from a clone: pull latest first so a reinstall never copies stale code.
   if [ -d "$SCRIPT_DIR/.git" ]; then
     echo "🔄 Pulling latest changes in local clone..."
-    if ! git -C "$SCRIPT_DIR" pull --ff-only -q; then
+    if ! git -C "$SCRIPT_DIR" pull --ff-only -q 2>/dev/null; then
       echo "⚠️  git pull failed — continuing with local files as-is."
     fi
   fi
@@ -35,16 +37,20 @@ else
   echo "⬇️  Downloading plugin files from GitHub..."
   curl -fsSL "$REPO_RAW/src/budget.ts" -o "$TMP_DIR/src/budget.ts"
   curl -fsSL "$REPO_RAW/src/cli.ts" -o "$TMP_DIR/src/cli.ts"
-  curl -fsSL "$REPO_RAW/command/budget-allowance.md" -o "$TMP_DIR/command/budget-allowance.md"
+  curl -fsSL "$REPO_RAW/command/budget.md" -o "$TMP_DIR/command/budget.md"
   SRC_DIR="$TMP_DIR"
 fi
 
 cp "$SRC_DIR/src/budget.ts" "$PLUGINS_DIR/budget.ts"
 cp "$SRC_DIR/src/cli.ts" "$PLUGINS_DIR/cli.ts"
-cp "$SRC_DIR/command/budget-allowance.md" "$COMMAND_DIR/budget-allowance.md"
+
+if [ -f "$SRC_DIR/command/budget.md" ]; then
+  cp "$SRC_DIR/command/budget.md" "$COMMAND_DIR/budget.md"
+  cp "$SRC_DIR/command/budget.md" "$COMMANDS_DIR/budget.md"
+fi
 
 echo "✅ Copied plugin files to $PLUGINS_DIR"
-echo "✅ Copied slash command to $COMMAND_DIR"
+echo "✅ Copied slash command (/budget) to $COMMAND_DIR and $COMMANDS_DIR"
 
 PLUGIN_ABS_PATH="$PLUGINS_DIR/budget.ts"
 
@@ -75,7 +81,7 @@ if (!hasPlugin) {
 } else {
   // Remove only the budgets the installer previously injected. Any other
   // options the user set themselves are preserved across reinstalls.
-  const INJECTED_KEYS = ['compactAtInputTokens', 'modelCostBudgets', 'modelTokenBudgets', 'providerCostBudgets', 'providerTokenBudgets'];
+  const INJECTED_KEYS = ['compactAtInputTokens', 'modelCostBudgets', 'modelTokenBudgets', 'providerCostBudgets', 'providerTokenBudgets', 'providerModelCostBudgets', 'providerModelTokenBudgets'];
   content.plugin = content.plugin.map(p => {
     if ((Array.isArray(p) ? p[0] : p) !== pluginPath) return p;
     const entry = Array.isArray(p) ? p : [p];
@@ -89,8 +95,6 @@ console.log('✅ Patched ' + path + ' (no budget caps set)');
 "
 }
 
-# Patch EVERY config file that exists so a reinstall never leaves a stale
-# entry or stale budgets in one of them. opencode reads both.
 PATCHED=0
 if [ -f "$CONFIG_DIR/opencode.json" ]; then
   patch_config "$CONFIG_DIR/opencode.json"
@@ -107,5 +111,6 @@ fi
 echo ""
 echo "🎉 opencode-budget-allowance installation complete!"
 echo "No budget limits are set by default."
-echo "Restart opencode to load the updated plugin and /budget-allowance command."
-echo "To set a session or daily limit, run: /budget-allowance 15 (or run 'bun run ~/.config/opencode/plugins/cli.ts')"
+echo "Restart opencode to load the updated plugin and /budget command."
+echo "In chat: run /budget (or /budget 15, /budget off, /budget off global)"
+echo "In terminal: run 'bun run ~/.config/opencode/plugins/cli.ts' for offline interactive menu"

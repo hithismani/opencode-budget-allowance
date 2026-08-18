@@ -43,16 +43,16 @@ This plugin addresses those issues:
 
 No budgets are set on install. You control when and how limits apply.
 
-### 1. Slash command (`/budget-allowance`)
+### 1. Slash commands (`/budget`, `/allocate-budget`, `/budget-allowance`)
 
-Run the `/budget-allowance` command directly in your opencode session:
+Run slash commands directly in your opencode chat session:
 
-* `/budget-allowance`: Show current session spend, daily totals, and average token usage.
-* `/budget-allowance 15`: Set a $15.00 limit for the active chat session.
-* `/budget-allowance 500k`: Set a 500,000 token limit for the active chat session.
-* `/budget-allowance off`: Disable budget checks for the active chat session.
-* `/budget-allowance daily 25`: Set the global daily cost allowance to $25.00.
-* `/budget-allowance history`: Show the audit log of past top-ups.
+* `/budget`: Show current session spend, daily totals, and active limits.
+* `/budget 15`: Set a $15.00 limit for the active chat session.
+* `/budget 500k`: Set a 500,000 token limit for the active chat session.
+* `/budget off`: Disable budget checks for the active chat session.
+* `/budget daily 25`: Set the global daily cost allowance to $25.00.
+* `/budget history`: Show the audit log of past top-ups.
 
 ### 2. Project-specific allowances
 
@@ -81,9 +81,35 @@ You can set cost caps per provider in `opencode.json`:
 }
 ```
 
-### 4. Model-specific allowances
+### 4. Provider-specific model allowances
 
-You can also set caps for specific models or keywords:
+You can set caps for specific models under specific providers in two convenient ways:
+
+**Option A: Provider-prefixed model keys**
+```json
+"modelCostBudgets": {
+  "anthropic/claude-3-7-sonnet": 10.00,
+  "google-vertex/gemini-2.5-pro": 5.00,
+  "xai/grok-4.5": 15.00
+}
+```
+
+**Option B: Nested `providerModelCostBudgets`**
+```json
+"providerModelCostBudgets": {
+  "anthropic": {
+    "claude-3-7-sonnet": 10.00,
+    "claude-3-5-haiku": 2.00
+  },
+  "google-vertex": {
+    "gemini-2.5-pro": 5.00
+  }
+}
+```
+
+### 5. Generic model allowances
+
+You can also set global caps for specific models across any provider:
 
 ```json
 "modelCostBudgets": {
@@ -93,8 +119,6 @@ You can also set caps for specific models or keywords:
   "grok-4.5": 25.00
 }
 ```
-
-When a model is available across multiple providers, `modelCostBudgets` caps total session spend regardless of provider, while `providerCostBudgets` tracks costs against the active provider's specific limit.
 
 ## Offline interactive CLI
 
