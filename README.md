@@ -1,4 +1,4 @@
-# opencode-budget-allowance
+# opencode-budget-allowance (☢ Experimental)
 
 [![GitHub Repository](https://img.shields.io/badge/GitHub-hithismani%2Fopencode--budget--allowance-blue)](https://github.com/hithismani/opencode-budget-allowance)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
