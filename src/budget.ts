@@ -166,59 +166,6 @@ export default (async ({ client }, options: BudgetOptions = {}) => {
   } = options;
 
   return {
-    // Clean System Context Awareness
-    "experimental.chat.system.transform": async (input, output) => {
-      const sessionId = input.sessionID || "";
-      const modelName = input.model?.id || "Active Model";
-      const todayStr = new Date().toISOString().split("T")[0];
-      const state = loadState();
-      const isSessionDisabled = state.disabledSessions[sessionId] === true;
-
-      if (isSessionDisabled) {
-        output.system.push(`[Opencode Budget Allowance Plugin: Disabled for session ${sessionId}]`);
-        return;
-      }
-
-      const matchedCostKey = Object.keys(modelCostBudgets).find((k) =>
-        modelName.toLowerCase().includes(k.toLowerCase())
-      );
-      const sessionCostLimit =
-        state.sessionCostLimits[sessionId]?.limit ??
-        (matchedCostKey ? modelCostBudgets[matchedCostKey] : defaultSessionLimitUSD);
-
-      const effectiveDailyCostLimit =
-        defaultDailyLimitUSD === Infinity
-          ? Infinity
-          : defaultDailyLimitUSD + (state.dailyTopUpUSD[todayStr] || 0);
-
-      const dbMetrics = getOverviewMetrics();
-      const sessionRow = queryDb((db) => {
-        return db.query(`SELECT cost FROM session WHERE id = ?`).get(sessionId) as { cost: number } | null;
-      }, { cost: 0 });
-
-      const currentSessionCost = sessionRow?.cost ?? 0;
-
-      // 90% Toast Warning check
-      if (sessionCostLimit !== Infinity && currentSessionCost / sessionCostLimit >= 0.90) {
-        const pct = Math.round((currentSessionCost / sessionCostLimit) * 100);
-        output.system.push(
-          `[⚠️ Budget Warning Toast: Session cost is at ${pct}% of cap ($${currentSessionCost.toFixed(2)} / $${sessionCostLimit.toFixed(2)}). To override or extend, run "/budget-allowance 20" or "/budget-allowance off"]`
-        );
-      } else if (effectiveDailyCostLimit !== Infinity && dbMetrics.dailyCost / effectiveDailyCostLimit >= 0.90) {
-        const pct = Math.round((dbMetrics.dailyCost / effectiveDailyCostLimit) * 100);
-        output.system.push(
-          `[⚠️ Budget Warning Toast: Daily cost is at ${pct}% of cap ($${dbMetrics.dailyCost.toFixed(2)} / $${effectiveDailyCostLimit.toFixed(2)}). To override or extend, run "/budget-allowance daily 30" or "/budget-allowance off"]`
-        );
-      } else if (sessionCostLimit !== Infinity || effectiveDailyCostLimit !== Infinity) {
-        const costStr = sessionCostLimit === Infinity ? "Unlimited" : `$${sessionCostLimit.toFixed(2)}`;
-        const dailyStr = effectiveDailyCostLimit === Infinity ? "Unlimited" : `$${effectiveDailyCostLimit.toFixed(2)}`;
-
-        output.system.push(
-          `[Opencode Budget Allowance Plugin Active] Model: ${modelName} | Session Limit: ${costStr} | Daily Limit: ${dailyStr} | Overrides File: ${statePath}`
-        );
-      }
-    },
-
     "chat.params": async (params) => {
       const sessionId = params.sessionID || (params as any).sessionId || "";
       const rawModel = params.model;

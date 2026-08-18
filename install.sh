@@ -7,6 +7,8 @@ COMMAND_DIR="$CONFIG_DIR/command"
 
 mkdir -p "$PLUGINS_DIR" "$COMMAND_DIR"
 
+rm -f "$PLUGINS_DIR/budget.ts" "$PLUGINS_DIR/cli.ts" "$COMMAND_DIR/budget-allowance.md"
+
 REPO_RAW="https://raw.githubusercontent.com/hithismani/opencode-budget-allowance/main"
 
 # When run from a clone, files live next to this script. When piped via
