@@ -25,7 +25,7 @@ The installer sets no budget caps by default. When first installed, all sessions
 
 ## Why this exists
 
-Working with models like Claude 3.5 Opus, GPT-4o, or FABLE 5 in agentic loops can consume large amounts of API credits quickly. Most budget plugins throw hard errors when a limit is reached, but because your prompt to change or disable the limit also triggers the same error, you get locked out until you manually edit configuration files. 
+Working with models like Fable 5, DeepSeek V4, Kimi K3, or Grok 4.5 in agentic loops can consume large amounts of API credits quickly. Most budget plugins throw hard errors when a limit is reached, but because your prompt to change or disable the limit also triggers the same error, you get locked out until you manually edit configuration files. 
 
 Other plugins print console banners directly into stdout, which breaks opencode's TUI layout and causes line wrap bugs. Some plugins even send LLM calls just to calculate token prices, wasting API credits to check a local setting.
 
@@ -77,7 +77,7 @@ You can set cost caps per provider in `opencode.json`:
 "providerCostBudgets": {
   "anthropic": 20.00,
   "google-vertex": 5.00,
-  "openai": 10.00
+  "xai": 10.00
 }
 ```
 
@@ -88,11 +88,13 @@ You can also set caps for specific models or keywords:
 ```json
 "modelCostBudgets": {
   "fable-5": 10.00,
-  "claude-3-opus": 15.00
+  "deepseek-v4": 15.00,
+  "kimi-k3": 20.00,
+  "grok-4.5": 25.00
 }
 ```
 
-When a model is available across multiple providers (such as `claude-3-5-sonnet` on Anthropic vs Google Vertex), `modelCostBudgets` caps total session spend regardless of provider, while `providerCostBudgets` tracks costs against the active provider's specific limit.
+When a model is available across multiple providers, `modelCostBudgets` caps total session spend regardless of provider, while `providerCostBudgets` tracks costs against the active provider's specific limit.
 
 ## Offline interactive CLI
 

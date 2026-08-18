@@ -39,7 +39,7 @@ const hasPlugin = content.plugin.some(p => (Array.isArray(p) ? p[0] : p) === plu
 if (!hasPlugin) {
   content.plugin.push([pluginPath, {
     compactAtInputTokens: 120000,
-    modelCostBudgets: { 'fable-5': 10.00, 'claude-3-opus': 15.00 }
+    modelCostBudgets: { 'fable-5': 10.00, 'deepseek-v4': 15.00, 'kimi-k3': 20.00, 'grok-4.5': 25.00 }
   }]);
   fs.writeFileSync(path, JSON.stringify(content, null, 2));
   console.log('✅ Auto-patched ' + path + ' with opencode-budget-allowance plugin!');
@@ -50,4 +50,5 @@ if (!hasPlugin) {
 
 echo ""
 echo "🎉 opencode-budget-allowance installation complete!"
-echo "Quit and restart opencode (Ctrl+C or /exit) to activate."
+echo "No budget limits are set by default."
+echo "To set a session or daily limit, run: /budget-allowance 15 (or run 'bun run ~/.config/opencode/plugins/cli.ts')"
