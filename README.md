@@ -3,19 +3,17 @@
 [![GitHub Repository](https://img.shields.io/badge/GitHub-hithismani%2Fopencode--budget--allowance-blue)](https://github.com/hithismani/opencode-budget-allowance)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Standalone session, daily, project, and provider budget allowance plugin & **100% Offline Interactive CLI** for **opencode** created by [@hithismani](https://github.com/hithismani).
+A session, daily, project, and provider budget allowance plugin and offline interactive CLI for opencode by [@hithismani](https://github.com/hithismani).
 
----
+## Installation
 
-## 🚀 1-Command Automated Installation
-
-Run this single command in your terminal to automatically install the plugin, slash command, and auto-patch your global `~/.config/opencode/opencode.json`:
+Run this command in your terminal to copy the files to `~/.config/opencode/` and update your global `~/.config/opencode/opencode.json`:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/hithismani/opencode-budget-allowance/main/install.sh | bash
 ```
 
-Or clone the repo and run:
+Or clone the repository and run the install script locally:
 
 ```bash
 git clone https://github.com/hithismani/opencode-budget-allowance.git
@@ -23,33 +21,42 @@ cd opencode-budget-allowance
 ./install.sh
 ```
 
----
+The installer sets no budget caps by default. When first installed, all sessions and models run without limits. You set caps yourself through the slash command or the config file.
 
-## ❌ The Problem
+## Why this exists
 
-1. **Runaway LLM API Bills:** Working with high-capacity models (Claude 3.5 Opus, GPT-4o, FABLE 5) in multi-turn agent loops can quietly consume tens or hundreds of dollars in API credits within a single session.
-2. **The "Override Loop" Trap:** Typical budget plugins throw hard error blocks when a cap is hit. But because your prompt to "raise the budget" also gets blocked by the error, you're locked out from talking to opencode until you hunt down and edit obscure config files manually!
-3. **TUI Output Corruption:** Printing raw `console.log()` banners or ASCII boxes into the terminal stdout messes up opencode's TUI renderer, causing garbled borders, line wrap glitches, and visual text artifacts.
-4. **Token-Burning Budget Managers:** Using LLM prompts to calculate token prices or ask budget questions burns expensive API tokens just to check or adjust a local setting!
+Working with models like Claude 3.5 Opus, GPT-4o, or FABLE 5 in agentic loops can consume large amounts of API credits quickly. Most budget plugins throw hard errors when a limit is reached, but because your prompt to change or disable the limit also triggers the same error, you get locked out until you manually edit configuration files. 
 
----
+Other plugins print console banners directly into stdout, which breaks opencode's TUI layout and causes line wrap bugs. Some plugins even send LLM calls just to calculate token prices, wasting API credits to check a local setting.
 
-## ✅ The Solution: `opencode-budget-allowance`
+## How it works
 
-`opencode-budget-allowance` solves all four problems with a zero-guesswork, native architecture:
+This plugin addresses those issues:
 
-* **0-Token Overhead Engine:** Reads opencode's native SQLite database (`~/.local/share/opencode/opencode.db`) directly in non-blocking WAL mode ($< 1\text{ms}$ query latency) with zero external network calls.
-* **Smart Prompt Bypassing:** When a limit is hit, prompts containing `budget-allowance`, `/budget`, `override`, `disable budget`, or `off` **bypass budget blocking**, letting you seamlessly talk to opencode to adjust caps!
-* **Zero TUI Artifacts (Silent Execution):** Runs 100% silently in the background without stdout line wrap bugs. Active budget status is injected cleanly into the system prompt context array via `experimental.chat.system.transform`.
-* **Proactive 90% Toast Warnings:** Injects subtle system warnings when you cross 90% of an active budget so you're never caught off guard.
-* **100% Offline Terminal CLI:** Includes an offline CLI tool (`bun run src/cli.ts`) that lets you view spend, lock caps, or update the plugin with 0 LLM tokens burned.
+* It reads opencode's SQLite database (`~/.local/share/opencode/opencode.db`) directly in read-only WAL mode. Reads take under 1ms and require no network requests or pricing table maintenance.
+* Prompts containing `budget-allowance`, `/budget`, `override`, `disable budget`, or `off` bypass budget blocking. You can talk to opencode to adjust caps even when a limit is active.
+* It runs quietly without console output. Active budget state is passed directly into the system prompt context array via `experimental.chat.system.transform`.
+* It injects a warning into the system prompt when you cross 90% of an active allowance.
+* It includes an offline CLI script (`bun run src/cli.ts`) so you can inspect spend and set caps without calling an LLM.
 
----
+## Setting allowances
 
-## 🎯 Flexible Allowance Scopes (Project, Provider, Model, & Daily)
+No budgets are set on install. You control when and how limits apply.
 
-### 1. Project-Specific Allowances
-Because opencode deep-merges project config over global config, you can place an `opencode.json` inside any project directory to set custom project allowances:
+### 1. Slash command (`/budget-allowance`)
+
+Run the `/budget-allowance` command directly in your opencode session:
+
+* `/budget-allowance`: Show current session spend, daily totals, and average token usage.
+* `/budget-allowance 15`: Set a $15.00 limit for the active chat session.
+* `/budget-allowance 500k`: Set a 500,000 token limit for the active chat session.
+* `/budget-allowance off`: Disable budget checks for the active chat session.
+* `/budget-allowance daily 25`: Set the global daily cost allowance to $25.00.
+* `/budget-allowance history`: Show the audit log of past top-ups.
+
+### 2. Project-specific allowances
+
+Because opencode merges project configuration over global configuration, you can add an `opencode.json` inside a project folder to set local caps:
 
 ```json
 {
@@ -62,8 +69,9 @@ Because opencode deep-merges project config over global config, you can place an
 }
 ```
 
-### 2. Provider-Specific Allowances
-Set custom allowance caps per LLM provider (e.g. higher caps for Anthropic, lower for Google Vertex):
+### 3. Provider-specific allowances
+
+You can set cost caps per provider in `opencode.json`:
 
 ```json
 "providerCostBudgets": {
@@ -73,28 +81,33 @@ Set custom allowance caps per LLM provider (e.g. higher caps for Anthropic, lowe
 }
 ```
 
-### 3. Multi-Provider Model Allocation
-If a model exists across multiple providers (e.g. `claude-3-5-sonnet` on Anthropic vs Google Vertex):
-* **`modelCostBudgets`** matches the model name (`claude-3-5-sonnet`) and caps total session spend regardless of provider.
-* **`providerCostBudgets`** matches the active provider (`anthropic` vs `google-vertex`). Opencode records `providerID` for every turn in SQLite, so switching providers allocates cost accurately to that provider's cap!
+### 4. Model-specific allowances
 
----
+You can also set caps for specific models or keywords:
 
-## 💻 Offline Interactive CLI (0 LLM Tokens Burned)
+```json
+"modelCostBudgets": {
+  "fable-5": 10.00,
+  "claude-3-opus": 15.00
+}
+```
 
-In addition to the opencode slash command, this plugin includes an interactive offline CLI tool:
+When a model is available across multiple providers (such as `claude-3-5-sonnet` on Anthropic vs Google Vertex), `modelCostBudgets` caps total session spend regardless of provider, while `providerCostBudgets` tracks costs against the active provider's specific limit.
+
+## Offline interactive CLI
+
+You can manage budgets without using LLM tokens by running the terminal CLI:
 
 ```bash
-# Run the interactive offline CLI anytime from terminal:
 bun run /path/to/opencode-budget-allowance/src/cli.ts
 ```
 
 ```text
 ================================================================
-💳 OPENCODE BUDGET ALLOWANCE CLI (100% Offline - 0 LLM Tokens Burned)
+OPENCODE BUDGET ALLOWANCE CLI (100% Offline - 0 LLM Tokens Burned)
 ================================================================
 
-📊 Today's Spend Overview (2026-08-18):
+Today's Spend Overview (2026-08-18):
    • Total Cost Spent:       $7.90
    • Total Tokens Used:      3,633,942
    • Active Sessions Today:  2
@@ -109,55 +122,23 @@ Select an option:
   6) Exit
 ```
 
----
+## Database metrics
 
-## ⚡ Slash Command (`/budget-allowance`)
+Opencode calculates token counts and costs on every turn and writes them to SQLite:
 
-| Command | Action |
-| :--- | :--- |
-| **`/budget-allowance`** | View active session spend, daily allowance totals, model burn rate, and token averages. |
-| **`/budget-allowance 15`** | Set a **$15.00 allowance cap** on the active chat session. |
-| **`/budget-allowance 500k`** | Set a **500,000 token ceiling** on the active chat session. |
-| **`/budget-allowance off`** | **Disable budget limits completely** for the active chat session. |
-| **`/budget-allowance daily 25`** | Set global **daily budget allowance** to $25.00. |
-| **`/budget-allowance history`** | View **audit log history** of past top-ups and allowance changes. |
+* Database path: `~/.local/share/opencode/opencode.db`
+* Table: `session`
 
----
+The plugin queries `cost`, `tokens_input`, `tokens_output`, `tokens_cache_read`, and `tokens_cache_write` from this table.
 
-## 🏛️ How Costing & Token Tracking Works (Native Opencode SQLite Engine)
+## Local state and overrides
 
-Opencode **natively calculates exact token counts and $ USD costs on every turn** and records them directly into its native SQLite database:
+Active overrides and top-up audit records are stored at `~/.config/opencode/budget-overrides.json`. To reset all overrides manually, edit or delete that file.
 
-📍 **Database Path:** `~/.local/share/opencode/opencode.db`  
-📊 **Table:** `session`
+## Disclaimer
 
-```sql
-SELECT 
-  cost,                -- Native $ USD cost calculated per turn by Opencode
-  tokens_input,        -- Input prompt tokens
-  tokens_output,       -- Generated output tokens
-  tokens_cache_read,   -- Prompt cache hits
-  tokens_cache_write   -- Prompt cache writes
-FROM session WHERE id = ?
-```
+This software is provided as is, without warranty of any kind. This plugin relies on cost estimates logged by opencode in its local SQLite database. Actual provider billing may vary based on cache rates, discounts, or API changes. Monitor your provider dashboards directly.
 
----
-
-## 📁 Overrides & Audit Log File
-
-Active overrides and top-up audit histories are saved at:
-`~/.config/opencode/budget-overrides.json`
-
----
-
-## ⚠️ Disclaimer & Warranty Notice
-
-**THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.** 
-
-This plugin relies on the cost estimates and token metrics logged by opencode in its local SQLite database. Actual API provider billing (Anthropic, OpenAI, Vertex AI, OpenRouter, etc.) may vary based on provider discounts, cache rates, or latency. Always monitor your LLM provider dashboards directly.
-
----
-
-## 📜 License
+## License
 
 Distributed under the [MIT License](LICENSE).
