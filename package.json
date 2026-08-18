@@ -1,0 +1,27 @@
+{
+  "name": "opencode-budget-allowance",
+  "version": "1.0.0",
+  "description": "Standalone session and daily budget allowance plugin for opencode",
+  "main": "./src/budget.ts",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hithismani/opencode-budget-allowance.git"
+  },
+  "author": "hithismani",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/hithismani/opencode-budget-allowance/issues"
+  },
+  "homepage": "https://github.com/hithismani/opencode-budget-allowance#readme",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "budget",
+    "allowance",
+    "tokens"
+  ],
+  "peerDependencies": {
+    "@opencode-ai/plugin": "*"
+  }
+}
