@@ -7,11 +7,30 @@ COMMAND_DIR="$CONFIG_DIR/command"
 
 mkdir -p "$PLUGINS_DIR" "$COMMAND_DIR"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_RAW="https://raw.githubusercontent.com/hithismani/opencode-budget-allowance/main"
 
-cp "$SCRIPT_DIR/src/budget.ts" "$PLUGINS_DIR/budget.ts"
-cp "$SCRIPT_DIR/src/cli.ts" "$PLUGINS_DIR/cli.ts"
-cp "$SCRIPT_DIR/command/budget-allowance.md" "$COMMAND_DIR/budget-allowance.md"
+# When run from a clone, files live next to this script. When piped via
+# curl | bash, BASH_SOURCE resolves to the caller's cwd, so detect that and
+# download the files from GitHub instead of cp-ing from a nonexistent path.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" && pwd)"
+
+if [ -f "$SCRIPT_DIR/src/budget.ts" ]; then
+  SRC_DIR="$SCRIPT_DIR"
+  echo "📦 Installing from local clone: $SRC_DIR"
+else
+  TMP_DIR="$(mktemp -d)"
+  trap 'rm -rf "$TMP_DIR"' EXIT
+  mkdir -p "$TMP_DIR/src" "$TMP_DIR/command"
+  echo "⬇️  Downloading plugin files from GitHub..."
+  curl -fsSL "$REPO_RAW/src/budget.ts" -o "$TMP_DIR/src/budget.ts"
+  curl -fsSL "$REPO_RAW/src/cli.ts" -o "$TMP_DIR/src/cli.ts"
+  curl -fsSL "$REPO_RAW/command/budget-allowance.md" -o "$TMP_DIR/command/budget-allowance.md"
+  SRC_DIR="$TMP_DIR"
+fi
+
+cp "$SRC_DIR/src/budget.ts" "$PLUGINS_DIR/budget.ts"
+cp "$SRC_DIR/src/cli.ts" "$PLUGINS_DIR/cli.ts"
+cp "$SRC_DIR/command/budget-allowance.md" "$COMMAND_DIR/budget-allowance.md"
 
 echo "✅ Copied plugin files to $PLUGINS_DIR"
 echo "✅ Copied slash command to $COMMAND_DIR"
