@@ -10,6 +10,10 @@ import {
   getOverviewMetrics,
   getSessionMetrics,
   getEffectiveDailyLimits,
+  applyDailyLimit,
+  loadPluginOptions,
+  localDateStr,
+  formatHistory,
   formatK,
   type BudgetState,
   type BudgetOptions,
@@ -185,9 +189,9 @@ function getActiveSession(): { id: string; title?: string } | null {
   return null;
 }
 
-function printStatusOverview(state: BudgetState, metrics: ReturnType<typeof getOverviewMetrics>, todayStr: string) {
+function printStatusOverview(state: BudgetState, metrics: ReturnType<typeof getOverviewMetrics>, todayStr: string, options: BudgetOptions = {}) {
   const { effectiveDailyCostLimit, effectiveDailyTokenLimit, dailyTopUpUSD, dailyTopUpTokens } =
-    getEffectiveDailyLimits(state, {}, todayStr);
+    getEffectiveDailyLimits(state, options, todayStr);
 
   console.log(`\x1b[1m\x1b[36m================================================================\x1b[0m`);
   console.log(`💳 \x1b[1mOPENCODE BUDGET ALLOWANCE\x1b[0m \x1b[2m(100% Offline - 0 LLM Tokens)\x1b[0m`);
@@ -340,21 +344,22 @@ async function performUpdate() {
 async function main() {
   const state = loadState();
   const metrics = getOverviewMetrics();
-  const todayStr = new Date().toISOString().split("T")[0];
+  const todayStr = localDateStr();
+  const options = loadPluginOptions();
 
   const args = process.argv.slice(2).join(" ").trim().toLowerCase();
 
   // If called without arguments in a non-interactive environment (e.g. LLM tool execution),
   // output the status overview immediately rather than hanging on TTY input.
   if (args.length === 0 && !process.stdin.isTTY) {
-    printStatusOverview(state, metrics, todayStr);
+    printStatusOverview(state, metrics, todayStr, options);
     return;
   }
 
   // Direct argument mode
   if (args.length > 0) {
     if (args === "status" || args === "overview" || args === "show" || args === "info" || args === "summary") {
-      printStatusOverview(state, metrics, todayStr);
+      printStatusOverview(state, metrics, todayStr, options);
     } else if (
       args === "off global" ||
       args === "global off" ||
@@ -437,64 +442,36 @@ async function main() {
       }
     } else if (args === "history" || args === "audit" || args === "log") {
       console.log(`\x1b[1mTop-Up Audit History Log:\x1b[0m`);
-      if (state.history.length === 0) {
-        console.log(`  (No top-up records found)`);
-      } else {
-        state.history.slice(-10).reverse().forEach((rec) => {
-          const date = new Date(rec.timestamp).toLocaleString();
-          const amtStr =
-            rec.type === "cost"
-              ? `$${rec.amount.toFixed(2)}`
-              : rec.type === "token"
-              ? formatK(rec.amount)
-              : rec.type;
-          console.log(`  • [${date}] Scope: ${rec.scope} | Type: ${rec.type} | Amount: ${amtStr} | Session: ${rec.sessionId}`);
-        });
-      }
+      console.log(formatHistory(state));
     } else if (args.startsWith("daily ")) {
       const rawArg = args.slice(6).trim();
       const isTopUp = rawArg.startsWith("+") || rawArg.startsWith("topup ") || rawArg.startsWith("add ");
       const amountStr = rawArg.replace(/^\+/, "").replace(/^topup\s+/, "").replace(/^add\s+/, "").trim();
       const parsed = parseAmount(amountStr);
       if (parsed) {
+        const mode = isTopUp ? "topup" : "set";
+        const { newEffective } = applyDailyLimit(state, options, todayStr, parsed.type, parsed.value, mode);
+        state.history.push({
+          id: `cli_${Date.now()}`,
+          timestamp: Date.now(),
+          dateStr: todayStr,
+          sessionId: "GLOBAL_DAILY",
+          model: "CLI_MANUAL",
+          scope: "daily",
+          type: parsed.type,
+          amount: parsed.value,
+        });
+        saveState(state);
         if (parsed.type === "cost") {
-          const prevTopUp = state.dailyTopUpUSD[todayStr] || 0;
-          const newTopUp = isTopUp ? prevTopUp + parsed.value : parsed.value;
-          state.dailyTopUpUSD[todayStr] = newTopUp;
-          state.history.push({
-            id: `cli_${Date.now()}`,
-            timestamp: Date.now(),
-            dateStr: todayStr,
-            sessionId: "GLOBAL_DAILY",
-            model: "CLI_MANUAL",
-            scope: "daily",
-            type: "cost",
-            amount: parsed.value,
-          });
-          saveState(state);
-          const remaining = Math.max(0, newTopUp - metrics.dailyCost);
-          const pct = newTopUp > 0 ? ((metrics.dailyCost / newTopUp) * 100).toFixed(1) : "0.0";
-          console.log(`✅ ${isTopUp ? "Topped up" : "Set"} daily cost budget cap to $${newTopUp.toFixed(2)} for today (${todayStr})!`);
+          const remaining = Math.max(0, newEffective - metrics.dailyCost);
+          const pct = newEffective > 0 ? ((metrics.dailyCost / newEffective) * 100).toFixed(1) : "0.0";
+          console.log(`✅ ${isTopUp ? "Topped up" : "Set"} daily cost budget cap to $${newEffective.toFixed(2)} for today (${todayStr})!`);
           console.log(`   • Spent today so far: $${metrics.dailyCost.toFixed(2)} across ${metrics.sessionCount} sessions`);
           console.log(`   • Remaining / Pending daily allowance: \x1b[36m$${remaining.toFixed(2)}\x1b[0m (${pct}% used)`);
         } else {
-          const prevTopUp = state.dailyTopUpTokens[todayStr] || 0;
-          const newTopUp = isTopUp ? prevTopUp + parsed.value : parsed.value;
-          state.dailyTopUpTokens[todayStr] = newTopUp;
-          state.history.push({
-            id: `cli_${Date.now()}`,
-            timestamp: Date.now(),
-            dateStr: todayStr,
-            sessionId: "GLOBAL_DAILY",
-            model: "CLI_MANUAL",
-            scope: "daily",
-            type: "token",
-            amount: parsed.value,
-          });
-          saveState(state);
-          const remaining = Math.max(0, newTopUp - metrics.dailyTokens);
-          const pct = newTopUp > 0 ? ((metrics.dailyTokens / newTopUp) * 100).toFixed(1) : "0.0";
-          console.log(`✅ ${isTopUp ? "Topped up" : "Set"} daily token budget cap to ${formatK(newTopUp)} tokens for today (${todayStr})!`);
+          const remaining = Math.max(0, newEffective - metrics.dailyTokens);
+          const pct = newEffective > 0 ? ((metrics.dailyTokens / newEffective) * 100).toFixed(1) : "0.0";
+          console.log(`✅ ${isTopUp ? "Topped up" : "Set"} daily token budget cap to ${formatK(newEffective)} tokens for today (${todayStr})!`);
           console.log(`   • Tokens used today: ${metrics.dailyTokens.toLocaleString()}`);
           console.log(`   • Remaining / Pending daily tokens: \x1b[36m${formatK(remaining)}\x1b[0m (${pct}% used)`);
         }
@@ -502,7 +479,7 @@ async function main() {
         console.log(`❌ Invalid amount for daily allowance: "${amountStr}"`);
       }
     } else if (args === "help" || args === "-h" || args === "--help") {
-      printStatusOverview(state, metrics, todayStr);
+      printStatusOverview(state, metrics, todayStr, options);
     } else {
       const parsed = parseAmount(args);
       if (parsed) {
@@ -585,7 +562,7 @@ async function main() {
   const choice = await ask(`\x1b[1mEnter choice [1-7]: \x1b[0m`);
 
   if (choice === "1") {
-    const { effectiveDailyCostLimit, effectiveDailyTokenLimit } = getEffectiveDailyLimits(state, {}, todayStr);
+    const { effectiveDailyCostLimit, effectiveDailyTokenLimit } = getEffectiveDailyLimits(state, options, todayStr);
     console.log(`\n📊 \x1b[1mDaily Budget Info (${todayStr}):\x1b[0m`);
     console.log(`   • Spent Today: $${metrics.dailyCost.toFixed(2)} (${metrics.dailyTokens.toLocaleString()} tokens)`);
     if (effectiveDailyCostLimit !== Infinity) {
@@ -604,44 +581,29 @@ async function main() {
     const amountStr = inputStr.replace(/^\+/, "").replace(/^topup\s+/, "").replace(/^add\s+/, "").trim();
     const parsed = parseAmount(amountStr);
     if (parsed) {
+      const mode = isTopUp ? "topup" : "set";
+      const { newEffective } = applyDailyLimit(state, options, todayStr, parsed.type, parsed.value, mode);
+      state.history.push({
+        id: `cli_${Date.now()}`,
+        timestamp: Date.now(),
+        dateStr: todayStr,
+        sessionId: "GLOBAL_DAILY",
+        model: "CLI_MANUAL",
+        scope: "daily",
+        type: parsed.type,
+        amount: parsed.value,
+      });
+      saveState(state);
       if (parsed.type === "cost") {
-        const prevTopUp = state.dailyTopUpUSD[todayStr] || 0;
-        const newTopUp = isTopUp ? prevTopUp + parsed.value : parsed.value;
-        state.dailyTopUpUSD[todayStr] = newTopUp;
-        state.history.push({
-          id: `cli_${Date.now()}`,
-          timestamp: Date.now(),
-          dateStr: todayStr,
-          sessionId: "GLOBAL_DAILY",
-          model: "CLI_MANUAL",
-          scope: "daily",
-          type: "cost",
-          amount: parsed.value,
-        });
-        saveState(state);
-        const remaining = Math.max(0, newTopUp - metrics.dailyCost);
-        const pct = newTopUp > 0 ? ((metrics.dailyCost / newTopUp) * 100).toFixed(1) : "0.0";
-        console.log(`\n\x1b[32m✅ ${isTopUp ? "Topped up" : "Set"} daily cost budget cap to $${newTopUp.toFixed(2)}!\x1b[0m`);
+        const remaining = Math.max(0, newEffective - metrics.dailyCost);
+        const pct = newEffective > 0 ? ((metrics.dailyCost / newEffective) * 100).toFixed(1) : "0.0";
+        console.log(`\n\x1b[32m✅ ${isTopUp ? "Topped up" : "Set"} daily cost budget cap to $${newEffective.toFixed(2)}!\x1b[0m`);
         console.log(`   • Spent today: $${metrics.dailyCost.toFixed(2)}`);
         console.log(`   • Remaining / Pending daily allowance: \x1b[36m$${remaining.toFixed(2)}\x1b[0m (${pct}% used)\n`);
       } else {
-        const prevTopUp = state.dailyTopUpTokens[todayStr] || 0;
-        const newTopUp = isTopUp ? prevTopUp + parsed.value : parsed.value;
-        state.dailyTopUpTokens[todayStr] = newTopUp;
-        state.history.push({
-          id: `cli_${Date.now()}`,
-          timestamp: Date.now(),
-          dateStr: todayStr,
-          sessionId: "GLOBAL_DAILY",
-          model: "CLI_MANUAL",
-          scope: "daily",
-          type: "token",
-          amount: parsed.value,
-        });
-        saveState(state);
-        const remaining = Math.max(0, newTopUp - metrics.dailyTokens);
-        const pct = newTopUp > 0 ? ((metrics.dailyTokens / newTopUp) * 100).toFixed(1) : "0.0";
-        console.log(`\n\x1b[32m✅ ${isTopUp ? "Topped up" : "Set"} daily token budget cap to ${formatK(newTopUp)} tokens!\x1b[0m`);
+        const remaining = Math.max(0, newEffective - metrics.dailyTokens);
+        const pct = newEffective > 0 ? ((metrics.dailyTokens / newEffective) * 100).toFixed(1) : "0.0";
+        console.log(`\n\x1b[32m✅ ${isTopUp ? "Topped up" : "Set"} daily token budget cap to ${formatK(newEffective)} tokens!\x1b[0m`);
         console.log(`   • Tokens used today: ${metrics.dailyTokens.toLocaleString()}`);
         console.log(`   • Remaining / Pending daily tokens: \x1b[36m${formatK(remaining)}\x1b[0m (${pct}% used)\n`);
       }
@@ -796,56 +758,10 @@ async function main() {
     }
   } else if (choice === "5") {
     console.log(`\n\x1b[1mTop-Up Audit History Log:\x1b[0m`);
-    if (state.history.length === 0) {
-      console.log(`  (No top-up records found)`);
-    } else {
-      state.history.slice(-10).reverse().forEach((rec) => {
-        const date = new Date(rec.timestamp).toLocaleString();
-        const amtStr =
-          rec.type === "cost"
-            ? `$${rec.amount.toFixed(2)}`
-            : rec.type === "token"
-            ? formatK(rec.amount)
-            : rec.type;
-        console.log(`  • [${date}] Scope: ${rec.scope} | Type: ${rec.type} | Amount: ${amtStr} | Session: ${rec.sessionId}`);
-      });
-    }
+    console.log(formatHistory(state));
     console.log("");
   } else if (choice === "6") {
-    console.log(`\n🔄 Updating opencode-budget-allowance plugin...`);
-    try {
-      const repoDir = path.resolve(path.dirname(import.meta.url.replace("file://", "")), "..");
-      if (fs.existsSync(path.join(repoDir, ".git"))) {
-        execSync("git pull origin main", { cwd: repoDir, stdio: "inherit" });
-      }
-
-      const globalPluginPath = path.join(os.homedir(), ".config/opencode/plugins/budget.ts");
-      const globalCliPath = path.join(os.homedir(), ".config/opencode/plugins/cli.ts");
-      const globalCmdDir = path.join(os.homedir(), ".config/opencode/command");
-      const globalCmdsDir = path.join(os.homedir(), ".config/opencode/commands");
-
-      fs.mkdirSync(path.dirname(globalPluginPath), { recursive: true });
-      fs.mkdirSync(globalCmdDir, { recursive: true });
-      fs.mkdirSync(globalCmdsDir, { recursive: true });
-
-      fs.copyFileSync(path.join(repoDir, "src/budget.ts"), globalPluginPath);
-      fs.copyFileSync(path.join(repoDir, "src/cli.ts"), globalCliPath);
-
-      // Clean up deprecated command files
-      fs.rmSync(path.join(globalCmdDir, "allocate-budget.md"), { force: true });
-      fs.rmSync(path.join(globalCmdsDir, "allocate-budget.md"), { force: true });
-      fs.rmSync(path.join(globalCmdDir, "budget-allowance.md"), { force: true });
-      fs.rmSync(path.join(globalCmdsDir, "budget-allowance.md"), { force: true });
-
-      if (fs.existsSync(path.join(repoDir, "command/budget.md"))) {
-        fs.copyFileSync(path.join(repoDir, "command/budget.md"), path.join(globalCmdDir, "budget.md"));
-        fs.copyFileSync(path.join(repoDir, "command/budget.md"), path.join(globalCmdsDir, "budget.md"));
-      }
-
-      console.log(`\x1b[32m✅ Plugin and /budget command updated successfully to ~/.config/opencode/!\x1b[0m\n`);
-    } catch (err: any) {
-      console.error(`❌ Update failed: ${err.message}\n`);
-    }
+    await performUpdate();
   }
 
   if (process.stdout.isTTY) process.stdout.write(ENABLE_MOUSE);

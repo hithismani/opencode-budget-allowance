@@ -78,17 +78,6 @@ const hasPlugin = content.plugin.some(p => (Array.isArray(p) ? p[0] : p) === plu
 
 if (!hasPlugin) {
   content.plugin.push([pluginPath, {}]);
-} else {
-  // Remove only the budgets the installer previously injected. Any other
-  // options the user set themselves are preserved across reinstalls.
-  const INJECTED_KEYS = ['compactAtInputTokens', 'modelCostBudgets', 'modelTokenBudgets', 'providerCostBudgets', 'providerTokenBudgets', 'providerModelCostBudgets', 'providerModelTokenBudgets'];
-  content.plugin = content.plugin.map(p => {
-    if ((Array.isArray(p) ? p[0] : p) !== pluginPath) return p;
-    const entry = Array.isArray(p) ? p : [p];
-    const opts = (entry[1] && typeof entry[1] === 'object') ? { ...entry[1] } : {};
-    for (const k of INJECTED_KEYS) delete opts[k];
-    return [entry[0], opts];
-  });
 }
 fs.writeFileSync(path, JSON.stringify(content, null, 2));
 console.log('✅ Patched ' + path + ' (no budget caps set)');

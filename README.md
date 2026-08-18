@@ -33,8 +33,8 @@ Other plugins print console banners directly into stdout, which breaks opencode'
 
 This plugin addresses those issues:
 
-* It reads opencode's SQLite database (`~/.local/share/opencode/opencode.db`) directly in read-only WAL mode. Reads take under 1ms and require no network requests or pricing table maintenance.
-* Prompts containing `budget-allowance`, `/budget`, `override`, `disable budget`, or `off` bypass budget blocking. You can talk to opencode to adjust caps even when a limit is active.
+* It reads opencode's SQLite database (`~/.local/share/opencode/opencode.db`) directly in read-only mode. Reads take under 1ms and require no network requests or pricing table maintenance.
+* Prompts containing `budget`, `allowance`, `override`, `disable budget`, or `/budget` bypass tool blocking so you can adjust caps even when a limit is active.
 * It runs quietly without console output. Active budget state is passed directly into the system prompt context array via `experimental.chat.system.transform`.
 * It injects a warning into the system prompt when you cross 90% of an active allowance.
 * It includes an offline CLI script (`bun run src/cli.ts`) so you can inspect spend and set caps without calling an LLM.
@@ -43,14 +43,16 @@ This plugin addresses those issues:
 
 No budgets are set on install. You control when and how limits apply.
 
-### 1. Slash commands (`/budget`, `/allocate-budget`, `/budget-allowance`)
+### 1. Slash command (`/budget`)
 
-Run slash commands directly in your opencode chat session:
+Run `/budget` directly in your opencode chat session:
 
 * `/budget`: Show current session spend, daily totals, and active limits.
 * `/budget 15`: Set a $15.00 limit for the active chat session.
 * `/budget 500k`: Set a 500,000 token limit for the active chat session.
 * `/budget off`: Disable budget checks for the active chat session.
+* `/budget off global`: Disable budget checks for all sessions.
+* `/budget on` / `/budget on global`: Re-enable session or global checks.
 * `/budget daily 25`: Set the global daily cost allowance to $25.00.
 * `/budget history`: Show the audit log of past top-ups.
 
@@ -109,6 +111,8 @@ You can set caps for specific models under specific providers in two convenient 
 
 ### 5. Generic model allowances
 
+Token ceilings use the same shapes via `modelTokenBudgets`, `providerTokenBudgets`, and `providerModelTokenBudgets`.
+
 You can also set global caps for specific models across any provider:
 
 ```json
@@ -140,12 +144,13 @@ Today's Spend Overview (2026-08-18):
    • Avg Cost / Session:     $3.95
 
 Select an option:
-  1) Set Daily Budget Limit
+  1) Set / Top-Up Daily Budget Limit
   2) Set Budget Cap for a Session
-  3) Disable Budget Checks for a Session
-  4) View Top-Up Audit History Log
-  5) Update Plugin & Commands (git pull & sync)
-  6) Exit
+  3) Disable / Re-enable Budget Checks for a Session
+  4) Toggle Global Budget Checks (All Sessions)
+  5) View Top-Up Audit History Log
+  6) Update Plugin & Slash Command (git pull & sync)
+  7) Exit
 ```
 
 ## Database metrics

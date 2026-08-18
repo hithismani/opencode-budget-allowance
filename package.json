@@ -1,7 +1,7 @@
 {
   "name": "opencode-budget-allowance",
   "version": "1.1.0",
-  "description": "Standalone session and daily budget allowance plugin & offline interactive CLI for opencode",
+  "description": "Session, daily, project, and provider budget allowance plugin and offline CLI for opencode",
   "main": "./src/budget.ts",
   "type": "module",
   "bin": {

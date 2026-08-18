@@ -60,6 +60,47 @@ export function formatK(num: number): string {
   return `${num}`;
 }
 
+export function localDateStr(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+export function loadPluginOptions(): BudgetOptions {
+  const paths = [
+    path.join(os.homedir(), ".config/opencode/opencode.json"),
+    path.join(os.homedir(), ".config/opencode/opencode.jsonc"),
+  ];
+  for (const p of paths) {
+    try {
+      if (!fs.existsSync(p)) continue;
+      const content = JSON.parse(fs.readFileSync(p, "utf-8"));
+      for (const entry of content?.plugin || []) {
+        const pluginPath = Array.isArray(entry) ? entry[0] : entry;
+        if (typeof pluginPath === "string" && pluginPath.endsWith("budget.ts")) {
+          return Array.isArray(entry) && entry[1] && typeof entry[1] === "object" ? entry[1] : {};
+        }
+      }
+    } catch {
+      // jsonc / unreadable — skip
+    }
+  }
+  return {};
+}
+
+export function formatHistory(state: BudgetState, n = 10): string {
+  if (state.history.length === 0) return "  (No top-up records found)";
+  return state.history
+    .slice(-n)
+    .reverse()
+    .map((rec) => {
+      const date = new Date(rec.timestamp).toLocaleString();
+      const amtStr =
+        rec.type === "cost" ? `$${rec.amount.toFixed(2)}` : rec.type === "token" ? formatK(rec.amount) : rec.type;
+      return `  • [${date}] Scope: ${rec.scope} | Type: ${rec.type} | Amount: ${amtStr} | Session: ${rec.sessionId}`;
+    })
+    .join("\n");
+}
+
 // ============================================================================
 // PERSISTENCE HELPERS
 // ============================================================================
@@ -234,6 +275,24 @@ export function getEffectiveDailyLimits(state: BudgetState, options: BudgetOptio
   };
 }
 
+export function applyDailyLimit(
+  state: BudgetState,
+  options: BudgetOptions,
+  dateStr: string,
+  type: "cost" | "token",
+  amount: number,
+  mode: "set" | "topup"
+): { newEffective: number; newTopUp: number } {
+  const { baseDailyCost, baseDailyTokens } = getEffectiveDailyLimits(state, options, dateStr);
+  const base = type === "cost" ? baseDailyCost : baseDailyTokens;
+  const key = type === "cost" ? "dailyTopUpUSD" : "dailyTopUpTokens";
+  const prevTopUp = state[key][dateStr] || 0;
+  const newTopUp = mode === "topup" ? prevTopUp + amount : amount - base;
+  const newEffective = base + newTopUp;
+  state[key][dateStr] = newTopUp;
+  return { newEffective, newTopUp };
+}
+
 // ============================================================================
 // MODEL & PROVIDER RESOLVER
 // ============================================================================
@@ -314,7 +373,7 @@ export function checkBudgetStatus(
   if (state.globalDisabled === true) return { hardStopReason: null, warningReason: null };
   if (sessionId && state.disabledSessions[sessionId] === true) return { hardStopReason: null, warningReason: null };
 
-  const todayStr = new Date().toISOString().split("T")[0];
+  const todayStr = localDateStr();
   const {
     defaultSessionLimitUSD = Infinity,
     defaultSessionTokenLimit = Infinity,
@@ -448,6 +507,7 @@ export default {
 
     // Track sessions currently managing budget so we never block them
     const managingSessions = new Set<string>();
+    const sessionModels = new Map<string, ReturnType<typeof resolveModelAndProvider>>();
 
     return {
       "shell.env": async (input: any, output: any) => {
@@ -494,7 +554,7 @@ export default {
         const sessionId = input?.sessionID || "";
         const state = loadState();
         const isSessionDisabled = sessionId ? state.disabledSessions[sessionId] === true : false;
-        const todayStr = new Date().toISOString().split("T")[0];
+        const todayStr = localDateStr();
         const { effectiveDailyCostLimit, effectiveDailyTokenLimit } = getEffectiveDailyLimits(state, options, todayStr);
         const sessionCostLimit = sessionId ? state.sessionCostLimits[sessionId]?.limit : undefined;
         const sessionTokenLimit = sessionId ? state.sessionTokenLimits[sessionId]?.limit : undefined;
@@ -511,10 +571,9 @@ export default {
           return;
         }
 
-        const { providerId, modelId, fullModelKey, displayName } = resolveModelAndProvider(
-          input?.model,
-          undefined
-        );
+        const resolved = resolveModelAndProvider(input?.model, undefined);
+        const { providerId, modelId, fullModelKey, displayName } = resolved;
+        if (sessionId) sessionModels.set(sessionId, resolved);
 
         const { hardStopReason, warningReason } = checkBudgetStatus(
           sessionId,
@@ -525,7 +584,8 @@ export default {
           options
         );
 
-        if (hardStopReason) {
+        const managing = sessionId ? managingSessions.has(sessionId) : false;
+        if (hardStopReason && !managing) {
           output.system.push(
             `🛑 [BUDGET LIMIT EXCEEDED: 100% HARD STOP - ${hardStopReason}]\n` +
             `The user has reached 100% of their budget limit.\n` +
@@ -534,7 +594,7 @@ export default {
             `  bun run ~/.config/opencode/plugins/cli.ts\n` +
             `Do NOT perform any coding or project tasks until the budget is updated via the CLI.`
           );
-        } else if (warningReason) {
+        } else if (warningReason && !managing) {
           output.system.push(
             `⚠️ [BUDGET WARNING: 90% THRESHOLD REACHED - ${warningReason}]\n` +
             `The user has reached 90% or more of their budget allowance.\n` +
@@ -572,16 +632,18 @@ export default {
         }
 
         const sessionId = input?.sessionID || "";
+        if (sessionId && managingSessions.has(sessionId)) return;
         const state = loadState();
         if (state.globalDisabled === true) return;
         if (sessionId && state.disabledSessions[sessionId] === true) return;
 
+        const resolved = (sessionId && sessionModels.get(sessionId)) || resolveModelAndProvider(input?.model, input?.provider);
         const { hardStopReason } = checkBudgetStatus(
           sessionId,
-          "active model",
-          "",
-          "",
-          "",
+          resolved.displayName,
+          resolved.providerId,
+          resolved.modelId,
+          resolved.fullModelKey,
           options
         );
 
@@ -602,7 +664,7 @@ export default {
           async execute(_args, context) {
             const state = loadState();
             const metrics = getOverviewMetrics();
-            const todayStr = new Date().toISOString().split("T")[0];
+            const todayStr = localDateStr();
             const sessionId = context?.sessionID || process.env.OPENCODE_SESSION_ID || "";
 
             const { effectiveDailyCostLimit, effectiveDailyTokenLimit, dailyTopUpUSD, dailyTopUpTokens } =
@@ -693,37 +755,26 @@ export default {
           },
           async execute(args, context) {
             const state = loadState();
-            const todayStr = new Date().toISOString().split("T")[0];
+            const todayStr = localDateStr();
             const sessionId = context?.sessionID || process.env.OPENCODE_SESSION_ID || "ACTIVE_SESSION";
             const metrics = getOverviewMetrics();
             const sessionMetrics = sessionId ? getSessionMetrics(sessionId) : null;
 
             if (args.scope === "daily") {
-              const { baseDailyCost, baseDailyTokens } = getEffectiveDailyLimits(state, options, todayStr);
-              if (args.type === "cost") {
-                const prevTopUp = state.dailyTopUpUSD[todayStr] || 0;
-                let newTopUp = 0;
-                let newEffective = 0;
-                if (args.mode === "topup") {
-                  newTopUp = prevTopUp + args.amount;
-                  newEffective = (baseDailyCost > 0 ? baseDailyCost : 0) + newTopUp;
-                } else {
-                  newEffective = args.amount;
-                  newTopUp = Math.max(0, args.amount - baseDailyCost);
-                }
-                state.dailyTopUpUSD[todayStr] = newTopUp;
-                state.history.push({
-                  id: `tool_${Date.now()}`,
-                  timestamp: Date.now(),
-                  dateStr: todayStr,
-                  sessionId: "GLOBAL_DAILY",
-                  model: "AI_TOOL",
-                  scope: "daily",
-                  type: "cost",
-                  amount: args.amount,
-                });
-                saveState(state);
+              const { newEffective } = applyDailyLimit(state, options, todayStr, args.type, args.amount, args.mode);
+              state.history.push({
+                id: `tool_${Date.now()}`,
+                timestamp: Date.now(),
+                dateStr: todayStr,
+                sessionId: "GLOBAL_DAILY",
+                model: "AI_TOOL",
+                scope: "daily",
+                type: args.type,
+                amount: args.amount,
+              });
+              saveState(state);
 
+              if (args.type === "cost") {
                 const remaining = Math.max(0, newEffective - metrics.dailyCost);
                 const pct = newEffective > 0 ? ((metrics.dailyCost / newEffective) * 100).toFixed(1) : "0.0";
                 return (
@@ -732,29 +783,6 @@ export default {
                   `• Remaining / Pending daily allowance: $${remaining.toFixed(2)} (${pct}% used)`
                 );
               } else {
-                const prevTopUp = state.dailyTopUpTokens[todayStr] || 0;
-                let newTopUp = 0;
-                let newEffective = 0;
-                if (args.mode === "topup") {
-                  newTopUp = prevTopUp + args.amount;
-                  newEffective = (baseDailyTokens > 0 ? baseDailyTokens : 0) + newTopUp;
-                } else {
-                  newEffective = args.amount;
-                  newTopUp = Math.max(0, args.amount - baseDailyTokens);
-                }
-                state.dailyTopUpTokens[todayStr] = newTopUp;
-                state.history.push({
-                  id: `tool_${Date.now()}`,
-                  timestamp: Date.now(),
-                  dateStr: todayStr,
-                  sessionId: "GLOBAL_DAILY",
-                  model: "AI_TOOL",
-                  scope: "daily",
-                  type: "token",
-                  amount: args.amount,
-                });
-                saveState(state);
-
                 const remaining = Math.max(0, newEffective - metrics.dailyTokens);
                 const pct = newEffective > 0 ? ((metrics.dailyTokens / newEffective) * 100).toFixed(1) : "0.0";
                 return (
@@ -826,7 +854,7 @@ export default {
           },
           async execute(args, context) {
             const state = loadState();
-            const todayStr = new Date().toISOString().split("T")[0];
+            const todayStr = localDateStr();
             const sessionId = context?.sessionID || process.env.OPENCODE_SESSION_ID || "ACTIVE_SESSION";
 
             if (args.scope === "global") {
@@ -868,7 +896,7 @@ export default {
           },
           async execute(args, context) {
             const state = loadState();
-            const todayStr = new Date().toISOString().split("T")[0];
+            const todayStr = localDateStr();
             const sessionId = context?.sessionID || process.env.OPENCODE_SESSION_ID || "ACTIVE_SESSION";
 
             if (args.scope === "global") {
@@ -902,10 +930,21 @@ export default {
             }
           },
         }),
+
+        budget_get_history: tool({
+          description: "Show the audit log of past budget top-ups, cap changes, and enable/disable events.",
+          args: {},
+          async execute() {
+            return `Top-Up Audit History Log:\n${formatHistory(loadState())}`;
+          },
+        }),
       },
 
       "chat.params": async (params: any) => {
         const sessionId = params.sessionID || (params as any).sessionId || "";
+        if (sessionId && (params.model || params.provider)) {
+          sessionModels.set(sessionId, resolveModelAndProvider(params.model, params.provider));
+        }
 
         // Auto-compaction if input tokens exceed threshold
         if (compactAtInputTokens !== Infinity) {
