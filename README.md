@@ -7,11 +7,30 @@ Standalone session and daily budget allowance plugin & **100% Offline Interactiv
 
 ---
 
+## ❌ The Problem
+
+1. **Runaway LLM API Bills:** Working with high-capacity models (Claude 3.5 Opus, GPT-4o, FABLE 5) in multi-turn agent loops can quietly consume tens or hundreds of dollars in API credits within a single session.
+2. **The "Override Loop" Trap:** Typical budget plugins throw hard error blocks when a cap is hit. But because your prompt to "raise the budget" also gets blocked by the error, you're locked out from talking to opencode until you hunt down and edit obscure config files manually!
+3. **TUI Output Corruption:** Printing raw `console.log()` banners or ASCII boxes into the terminal stdout messes up opencode's TUI renderer, causing garbled borders, line wrap glitches, and visual text artifacts.
+4. **Token-Burning Budget Managers:** Using LLM prompts to calculate token prices or ask budget questions burns expensive API tokens just to check or adjust a local setting!
+
+---
+
+## ✅ The Solution: `opencode-budget-allowance`
+
+`opencode-budget-allowance` solves all four problems with a zero-guesswork, native architecture:
+
+* **0-Token Overhead Engine:** Reads opencode's native SQLite database (`~/.local/share/opencode/opencode.db`) directly in non-blocking WAL mode ($< 1\text{ms}$ query latency) with zero external network calls.
+* **Smart Prompt Bypassing:** When a limit is hit, prompts containing `budget-allowance`, `/budget`, `override`, `disable budget`, or `off` **bypass budget blocking**, letting you seamlessly talk to opencode to adjust caps!
+* **Zero TUI Artifacts (Silent Execution):** Runs 100% silently in the background without stdout line wrap bugs. Active budget status is injected cleanly into the system prompt context array via `experimental.chat.system.transform`.
+* **Proactive 90% Toast Warnings:** Injects subtle system warnings when you cross 90% of an active budget so you're never caught off guard.
+* **100% Offline Terminal CLI:** Includes an offline CLI tool (`bun run src/cli.ts`) that lets you view spend, lock caps, or update the plugin with 0 LLM tokens burned.
+
+---
+
 ## 💻 Offline Interactive CLI (0 LLM Tokens Burned)
 
-In addition to the opencode slash command, this plugin includes a **100% offline terminal CLI tool** (`bun run src/cli.ts` or `npx budget-allowance`).
-
-You can check your spending stats, set daily/session limits, or disable budgets **without calling any LLMs or burning a single API token!**
+In addition to the opencode slash command, this plugin includes an interactive offline CLI tool:
 
 ```bash
 # Run the interactive offline CLI anytime from terminal:
@@ -24,24 +43,36 @@ bun run /path/to/opencode-budget-allowance/src/cli.ts
 ================================================================
 
 📊 Today's Spend Overview (2026-08-18):
-   • Total Cost Spent:       $6.82
-   • Total Tokens Used:      3,165,459
+   • Total Cost Spent:       $7.90
+   • Total Tokens Used:      3,633,942
    • Active Sessions Today:  2
-   • Avg Cost / Session:     $3.41
+   • Avg Cost / Session:     $3.95
 
 Select an option:
   1) Set Daily Budget Limit
   2) Set Budget Cap for a Session
   3) Disable Budget Checks for a Session
   4) View Top-Up Audit History Log
-  5) Exit
+  5) Update Plugin & Commands (git pull & sync)
+  6) Exit
 ```
 
 ---
 
-## 🏛️ How Costing & Token Tracking Works (Native Opencode SQLite Engine)
+## ⚡ Slash Command (`/budget-allowance`)
 
-**Important:** This plugin **does NOT calculate token prices, parse model pricing tables, or guess token usage manually**. 
+| Command | Action |
+| :--- | :--- |
+| **`/budget-allowance`** | View active session spend, daily allowance totals, model burn rate, and token averages. |
+| **`/budget-allowance 15`** | Set a **$15.00 allowance cap** on the active chat session. |
+| **`/budget-allowance 500k`** | Set a **500,000 token ceiling** on the active chat session. |
+| **`/budget-allowance off`** | **Disable budget limits completely** for the active chat session. |
+| **`/budget-allowance daily 25`** | Set global **daily budget allowance** to $25.00. |
+| **`/budget-allowance history`** | View **audit log history** of past top-ups and allowance changes. |
+
+---
+
+## 🏛️ How Costing & Token Tracking Works (Native Opencode SQLite Engine)
 
 Opencode **natively calculates exact token counts and $ USD costs on every turn** and records them directly into its native SQLite database:
 
@@ -57,34 +88,6 @@ SELECT
   tokens_cache_write   -- Prompt cache writes
 FROM session WHERE id = ?
 ```
-
-### Why This Architecture Is Rock-Solid:
-* **Zero Latency Overhead:** Reads directly from SQLite in non-blocking WAL mode ($< 1\text{ms}$ query latency).
-* **Single Source of Truth:** Operates on the exact same ground-truth numbers that opencode tracks natively.
-* **No Pricing Maintenance:** Never worry about updating model rates or tokenizers when provider prices change.
-
----
-
-## 🌟 Key Features
-
-* **Zero Token Burn CLI:** Use the standalone terminal CLI to view stats and manage limits offline with 0 LLM tokens burned.
-* **Default Behavior on Install:** Installs as **Unlimited (`Infinity`)** by default. No unexpected budget blocks happen unless you explicitly set caps in `opencode.json` or via `/budget-allowance`!
-* **Override Loop Fix (Prompt Bypassing):** When a limit is hit, prompts containing `budget-allowance`, `/budget`, `override`, `disable budget`, or `off` are **never blocked**, so you can seamlessly talk to opencode to adjust or disable your budget!
-* **Zero TUI Artifacts (Silent Execution):** Runs 100% silently without injecting raw `console.log()` text into terminal stdout. System context is injected cleanly via `experimental.chat.system.transform`.
-* **Explicit Error Identification:** All error blocks carry the `[OPENCODE BUDGET ALLOWANCE PLUGIN BLOCK]` prefix and cite the exact local overrides file path (`~/.config/opencode/budget-overrides.json`).
-
----
-
-## ⚡ Slash Command (`/budget-allowance`)
-
-| Command | Action |
-| :--- | :--- |
-| **`/budget-allowance`** | View active session spend, daily allowance totals, model burn rate, and token averages. |
-| **`/budget-allowance 15`** | Set a **$15.00 allowance cap** on the active chat session. |
-| **`/budget-allowance 500k`** | Set a **500,000 token ceiling** on the active chat session. |
-| **`/budget-allowance off`** | **Disable budget limits completely** for the active chat session. |
-| **`/budget-allowance daily 25`** | Set global **daily budget allowance** to $25.00. |
-| **`/budget-allowance history`** | View **audit log history** of past top-ups and allowance changes. |
 
 ---
 
@@ -126,15 +129,13 @@ Then configure `~/.config/opencode/opencode.json`:
 Active overrides and top-up audit histories are saved at:
 `~/.config/opencode/budget-overrides.json`
 
-If you ever want to reset all limits manually, simply delete or edit that file!
-
 ---
 
 ## ⚠️ Disclaimer & Warranty Notice
 
 **THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.** 
 
-This plugin relies on the cost estimates and token metrics logged by opencode in its local SQLite database. Actual API provider billing (Anthropic, OpenAI, Vertex AI, OpenRouter, etc.) may vary based on provider discounts, cache rates, or latency. The authors and contributors shall not be held liable for any unexpected API charges, overages, or financial losses resulting from the use or misuse of this software. Always monitor your LLM provider dashboards directly.
+This plugin relies on the cost estimates and token metrics logged by opencode in its local SQLite database. Actual API provider billing (Anthropic, OpenAI, Vertex AI, OpenRouter, etc.) may vary based on provider discounts, cache rates, or latency. Always monitor your LLM provider dashboards directly.
 
 ---
 

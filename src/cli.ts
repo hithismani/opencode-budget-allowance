@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 
 import readline from "readline";
+import { execSync } from "child_process";
+import path from "path";
+import os from "os";
+import fs from "fs";
 import { loadState, saveState, getOverviewMetrics } from "./budget.ts";
 
 // ============================================================================
@@ -45,9 +49,10 @@ async function main() {
   console.log(`  \x1b[36m2)\x1b[0m Set Budget Cap for a Session`);
   console.log(`  \x1b[36m3)\x1b[0m Disable Budget Checks for a Session`);
   console.log(`  \x1b[36m4)\x1b[0m View Top-Up Audit History Log`);
-  console.log(`  \x1b[36m5)\x1b[0m Exit\n`);
+  console.log(`  \x1b[36m5)\x1b[0m Update Plugin & Commands (git pull & sync)`);
+  console.log(`  \x1b[36m6)\x1b[0m Exit\n`);
 
-  const choice = await ask(rl, `\x1b[1mEnter choice [1-5]: \x1b[0m`);
+  const choice = await ask(rl, `\x1b[1mEnter choice [1-6]: \x1b[0m`);
 
   if (choice === "1") {
     const amountStr = await ask(rl, `Enter extra daily dollar top-up (e.g. 10.00): $`);
@@ -127,6 +132,27 @@ async function main() {
       });
     }
     console.log("");
+  } else if (choice === "5") {
+    console.log(`\n🔄 Updating opencode-budget-allowance plugin...`);
+    try {
+      const repoDir = path.resolve(path.dirname(import.meta.url.replace("file://", "")), "..");
+      if (fs.existsSync(path.join(repoDir, ".git"))) {
+        execSync("git pull origin main", { cwd: repoDir, stdio: "inherit" });
+      }
+
+      const globalPluginPath = path.join(os.homedir(), ".config/opencode/plugins/budget.ts");
+      const globalCmdPath = path.join(os.homedir(), ".config/opencode/command/budget-allowance.md");
+
+      fs.mkdirSync(path.dirname(globalPluginPath), { recursive: true });
+      fs.mkdirSync(path.dirname(globalCmdPath), { recursive: true });
+
+      fs.copyFileSync(path.join(repoDir, "src/budget.ts"), globalPluginPath);
+      fs.copyFileSync(path.join(repoDir, "command/budget-allowance.md"), globalCmdPath);
+
+      console.log(`\x1b[32m✅ Plugin and slash commands updated successfully to ~/.config/opencode/!\x1b[0m\n`);
+    } catch (err: any) {
+      console.error(`❌ Update failed: ${err.message}\n`);
+    }
   }
 
   rl.close();

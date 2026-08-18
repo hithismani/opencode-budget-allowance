@@ -161,10 +161,11 @@ export default (async ({ client }, options: BudgetOptions = {}) => {
   } = options;
 
   return {
-    // Clean System Context Awareness (Zero TUI Console Clutter)
+    // Clean System Context Awareness (Zero TUI Console Clutter + 90% Toast Warning)
     "experimental.chat.system.transform": async (input, output) => {
       const sessionId = input.sessionID || "";
       const modelName = input.model?.id || "Active Model";
+      const todayStr = new Date().toISOString().split("T")[0];
       const state = loadState();
       const isSessionDisabled = state.disabledSessions[sessionId] === true;
 
@@ -180,9 +181,33 @@ export default (async ({ client }, options: BudgetOptions = {}) => {
         state.sessionCostLimits[sessionId]?.limit ??
         (matchedCostKey ? modelCostBudgets[matchedCostKey] : defaultSessionLimitUSD);
 
-      if (sessionCostLimit !== Infinity || defaultDailyLimitUSD !== Infinity) {
+      const effectiveDailyCostLimit =
+        defaultDailyLimitUSD === Infinity
+          ? Infinity
+          : defaultDailyLimitUSD + (state.dailyTopUpUSD[todayStr] || 0);
+
+      // Check metrics for 90% threshold toast warning
+      const dbMetrics = getOverviewMetrics();
+      const sessionRow = queryDb((db) => {
+        return db.query(`SELECT cost, tokens_input + tokens_output as totalTokens FROM session WHERE id = ?`).get(sessionId) as { cost: number; totalTokens: number } | null;
+      }, { cost: 0, totalTokens: 0 });
+
+      const currentSessionCost = sessionRow?.cost ?? 0;
+
+      // 90% Toast Warning check
+      if (sessionCostLimit !== Infinity && currentSessionCost / sessionCostLimit >= 0.90) {
+        const pct = Math.round((currentSessionCost / sessionCostLimit) * 100);
+        output.system.push(
+          `[⚠️ Budget Warning Toast: Session cost is at ${pct}% of cap ($${currentSessionCost.toFixed(2)} / $${sessionCostLimit.toFixed(2)}). To override or extend, run "/budget-allowance 20" or "/budget-allowance off"]`
+        );
+      } else if (effectiveDailyCostLimit !== Infinity && dbMetrics.dailyCost / effectiveDailyCostLimit >= 0.90) {
+        const pct = Math.round((dbMetrics.dailyCost / effectiveDailyCostLimit) * 100);
+        output.system.push(
+          `[⚠️ Budget Warning Toast: Daily cost is at ${pct}% of cap ($${dbMetrics.dailyCost.toFixed(2)} / $${effectiveDailyCostLimit.toFixed(2)}). To override or extend, run "/budget-allowance daily 30" or "/budget-allowance off"]`
+        );
+      } else if (sessionCostLimit !== Infinity || effectiveDailyCostLimit !== Infinity) {
         const costStr = sessionCostLimit === Infinity ? "Unlimited" : `$${sessionCostLimit.toFixed(2)}`;
-        const dailyStr = defaultDailyLimitUSD === Infinity ? "Unlimited" : `$${defaultDailyLimitUSD.toFixed(2)}`;
+        const dailyStr = effectiveDailyCostLimit === Infinity ? "Unlimited" : `$${effectiveDailyCostLimit.toFixed(2)}`;
 
         output.system.push(
           `[Opencode Budget Allowance Plugin Active] Model: ${modelName} | Session Limit: ${costStr} | Daily Limit: ${dailyStr} | Overrides File: ${statePath}`
@@ -300,9 +325,9 @@ export default (async ({ client }, options: BudgetOptions = {}) => {
           `\n🚨 [OPENCODE BUDGET ALLOWANCE PLUGIN BLOCK]\n` +
           `Daily spend limit reached ($${dbMetrics.dailyCost.toFixed(2)} / Cap $${effectiveDailyCostLimit.toFixed(2)}).\n\n` +
           `State Overrides File: ${statePath}\n\n` +
-          `To fix or continue talking, run:\n` +
-          `  /budget-allowance daily 25  (Increase daily budget limit to $25)\n` +
-          `  /budget-allowance off       (Disable budget enforcement for this chat)\n`
+          `To fix or continue talking:\n` +
+          `  1. Run slash command: /budget-allowance daily 25 (or /budget-allowance off)\n` +
+          `  2. OR run the offline CLI tool: bun run /path/to/opencode-budget-allowance/src/cli.ts\n`
         );
       }
 
@@ -314,9 +339,9 @@ export default (async ({ client }, options: BudgetOptions = {}) => {
           `\n🚨 [OPENCODE BUDGET ALLOWANCE PLUGIN BLOCK]\n` +
           `Daily token ceiling reached (${formatK(dbMetrics.dailyTokens)} / Ceiling ${formatK(effectiveDailyTokenLimit)}).\n\n` +
           `State Overrides File: ${statePath}\n\n` +
-          `To fix or continue talking, run:\n` +
-          `  /budget-allowance 2m   (Set token ceiling to 2 million)\n` +
-          `  /budget-allowance off  (Disable budget enforcement for this chat)\n`
+          `To fix or continue talking:\n` +
+          `  1. Run slash command: /budget-allowance 2m (or /budget-allowance off)\n` +
+          `  2. OR run the offline CLI tool: bun run /path/to/opencode-budget-allowance/src/cli.ts\n`
         );
       }
 
@@ -328,9 +353,9 @@ export default (async ({ client }, options: BudgetOptions = {}) => {
           `\n🚨 [OPENCODE BUDGET ALLOWANCE PLUGIN BLOCK]\n` +
           `Session budget limit reached for ${modelName} ($${dbMetrics.sessionCost.toFixed(2)} / Limit $${baseSessionCostCap.toFixed(2)}).\n\n` +
           `State Overrides File: ${statePath}\n\n` +
-          `To fix or continue talking, run:\n` +
-          `  /budget-allowance 15   (Increase session limit to $15.00)\n` +
-          `  /budget-allowance off  (Disable budget enforcement for this chat)\n`
+          `To fix or continue talking:\n` +
+          `  1. Run slash command: /budget-allowance 15 (or /budget-allowance off)\n` +
+          `  2. OR run the offline CLI tool: bun run /path/to/opencode-budget-allowance/src/cli.ts\n`
         );
       }
 
@@ -342,9 +367,9 @@ export default (async ({ client }, options: BudgetOptions = {}) => {
           `\n🚨 [OPENCODE BUDGET ALLOWANCE PLUGIN BLOCK]\n` +
           `Session token limit reached for ${modelName} (${formatK(dbMetrics.sessionTotalTokens)} / Limit ${formatK(baseSessionTokenCap)}).\n\n` +
           `State Overrides File: ${statePath}\n\n` +
-          `To fix or continue talking, run:\n` +
-          `  /budget-allowance 500k  (Set session token limit to 500,000)\n` +
-          `  /budget-allowance off   (Disable budget enforcement for this chat)\n`
+          `To fix or continue talking:\n` +
+          `  1. Run slash command: /budget-allowance 500k (or /budget-allowance off)\n` +
+          `  2. OR run the offline CLI tool: bun run /path/to/opencode-budget-allowance/src/cli.ts\n`
         );
       }
 
