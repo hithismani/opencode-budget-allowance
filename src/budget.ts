@@ -154,6 +154,86 @@ export function getOverviewMetrics() {
   );
 }
 
+export function getSessionMetrics(sessionId: string) {
+  return queryDb(
+    (db) => {
+      const sessionRow = db.query(`
+        SELECT cost, tokens_input, tokens_output, tokens_cache_read, tokens_cache_write, title, time_created, time_updated
+        FROM session WHERE id = ?
+      `).get(sessionId) as {
+        cost: number;
+        tokens_input: number;
+        tokens_output: number;
+        tokens_cache_read: number;
+        tokens_cache_write: number;
+        title: string | null;
+        time_created: number;
+        time_updated: number;
+      } | null;
+
+      if (!sessionRow) {
+        return {
+          cost: 0,
+          tokensInput: 0,
+          tokensOutput: 0,
+          tokensCacheRead: 0,
+          tokensCacheWrite: 0,
+          totalTokens: 0,
+          title: "",
+          exists: false,
+        };
+      }
+
+      const totalTokens = (sessionRow.tokens_input || 0) + (sessionRow.tokens_output || 0);
+      return {
+        cost: sessionRow.cost || 0,
+        tokensInput: sessionRow.tokens_input || 0,
+        tokensOutput: sessionRow.tokens_output || 0,
+        tokensCacheRead: sessionRow.tokens_cache_read || 0,
+        tokensCacheWrite: sessionRow.tokens_cache_write || 0,
+        totalTokens,
+        title: sessionRow.title || "",
+        exists: true,
+      };
+    },
+    {
+      cost: 0,
+      tokensInput: 0,
+      tokensOutput: 0,
+      tokensCacheRead: 0,
+      tokensCacheWrite: 0,
+      totalTokens: 0,
+      title: "",
+      exists: false,
+    }
+  );
+}
+
+export function getEffectiveDailyLimits(state: BudgetState, options: BudgetOptions, todayStr: string) {
+  const { defaultDailyLimitUSD = Infinity, defaultDailyTokenLimit = Infinity } = options;
+  const dailyTopUpUSD = state.dailyTopUpUSD[todayStr] || 0;
+  const dailyTopUpTokens = state.dailyTopUpTokens[todayStr] || 0;
+
+  const hasConfigDailyCost = defaultDailyLimitUSD !== undefined && defaultDailyLimitUSD !== Infinity;
+  const effectiveDailyCostLimit = hasConfigDailyCost
+    ? defaultDailyLimitUSD + dailyTopUpUSD
+    : dailyTopUpUSD > 0 ? dailyTopUpUSD : Infinity;
+
+  const hasConfigDailyTokens = defaultDailyTokenLimit !== undefined && defaultDailyTokenLimit !== Infinity;
+  const effectiveDailyTokenLimit = hasConfigDailyTokens
+    ? defaultDailyTokenLimit + dailyTopUpTokens
+    : dailyTopUpTokens > 0 ? dailyTopUpTokens : Infinity;
+
+  return {
+    effectiveDailyCostLimit,
+    effectiveDailyTokenLimit,
+    dailyTopUpUSD,
+    dailyTopUpTokens,
+    baseDailyCost: hasConfigDailyCost ? defaultDailyLimitUSD : 0,
+    baseDailyTokens: hasConfigDailyTokens ? defaultDailyTokenLimit : 0,
+  };
+}
+
 // ============================================================================
 // MODEL & PROVIDER RESOLVER
 // ============================================================================
@@ -231,9 +311,7 @@ export function checkBudgetExceeded(
 
   const todayStr = new Date().toISOString().split("T")[0];
   const {
-    defaultDailyLimitUSD = Infinity,
     defaultSessionLimitUSD = Infinity,
-    defaultDailyTokenLimit = Infinity,
     defaultSessionTokenLimit = Infinity,
     modelCostBudgets = {},
     modelTokenBudgets = {},
@@ -265,15 +343,7 @@ export function checkBudgetExceeded(
     findMatchingLimit(providerTokenBudgets, [providerId]) ??
     defaultSessionTokenLimit;
 
-  const effectiveDailyCostLimit =
-    defaultDailyLimitUSD === Infinity
-      ? Infinity
-      : defaultDailyLimitUSD + (state.dailyTopUpUSD[todayStr] || 0);
-
-  const effectiveDailyTokenLimit =
-    defaultDailyTokenLimit === Infinity
-      ? Infinity
-      : defaultDailyTokenLimit + (state.dailyTopUpTokens[todayStr] || 0);
+  const { effectiveDailyCostLimit, effectiveDailyTokenLimit } = getEffectiveDailyLimits(state, options, todayStr);
 
   if (
     baseSessionCostCap === Infinity &&
@@ -389,12 +459,11 @@ export default {
       "experimental.chat.system.transform": async (input: any, output: any) => {
         const sessionId = input?.sessionID || "";
         const state = loadState();
-        const isSessionDisabled = state.disabledSessions[sessionId] === true;
+        const isSessionDisabled = sessionId ? state.disabledSessions[sessionId] === true : false;
         const todayStr = new Date().toISOString().split("T")[0];
-        const dailyTopUpUSD = state.dailyTopUpUSD[todayStr] || 0;
-        const dailyTopUpTokens = state.dailyTopUpTokens[todayStr] || 0;
-        const sessionCostLimit = state.sessionCostLimits[sessionId]?.limit;
-        const sessionTokenLimit = state.sessionTokenLimits[sessionId]?.limit;
+        const { effectiveDailyCostLimit, effectiveDailyTokenLimit } = getEffectiveDailyLimits(state, options, todayStr);
+        const sessionCostLimit = sessionId ? state.sessionCostLimits[sessionId]?.limit : undefined;
+        const sessionTokenLimit = sessionId ? state.sessionTokenLimits[sessionId]?.limit : undefined;
 
         output.system = output.system || [];
 
@@ -437,19 +506,17 @@ export default {
           );
         } else {
           const parts: string[] = [];
-          if (sessionCostLimit !== undefined) {
+          if (sessionCostLimit !== undefined && sessionCostLimit !== Infinity) {
             parts.push(`Session Cost Cap: $${sessionCostLimit.toFixed(2)}`);
           }
-          if (sessionTokenLimit !== undefined) {
+          if (sessionTokenLimit !== undefined && sessionTokenLimit !== Infinity) {
             parts.push(`Session Token Cap: ${formatK(sessionTokenLimit)}`);
           }
-          if (options.defaultDailyLimitUSD !== Infinity || dailyTopUpUSD > 0) {
-            const cap = (options.defaultDailyLimitUSD === undefined || options.defaultDailyLimitUSD === Infinity ? 0 : options.defaultDailyLimitUSD) + dailyTopUpUSD;
-            parts.push(`Daily Cost Cap: $${cap.toFixed(2)}`);
+          if (effectiveDailyCostLimit !== Infinity) {
+            parts.push(`Daily Cost Cap: $${effectiveDailyCostLimit.toFixed(2)}`);
           }
-          if (options.defaultDailyTokenLimit !== Infinity || dailyTopUpTokens > 0) {
-            const cap = (options.defaultDailyTokenLimit === undefined || options.defaultDailyTokenLimit === Infinity ? 0 : options.defaultDailyTokenLimit) + dailyTopUpTokens;
-            parts.push(`Daily Token Cap: ${formatK(cap)}`);
+          if (effectiveDailyTokenLimit !== Infinity) {
+            parts.push(`Daily Token Cap: ${formatK(effectiveDailyTokenLimit)}`);
           }
           if (parts.length > 0) {
             output.system.push(`[Budget Allowance: ${parts.join(" | ")}]`);
@@ -489,50 +556,85 @@ export default {
       // Custom tools exposed directly to OpenCode agents
       tool: {
         budget_get_status: tool({
-          description: "Get today's LLM spend overview, tokens used, active caps, and session/global budget status without editing any files.",
+          description: "Get today's LLM spend overview, tokens used, active caps, remaining/pending balances, and session/global budget status without editing any files.",
           args: {},
           async execute(_args, context) {
             const state = loadState();
             const metrics = getOverviewMetrics();
             const todayStr = new Date().toISOString().split("T")[0];
-            const sessionId = context?.sessionID || "";
+            const sessionId = context?.sessionID || process.env.OPENCODE_SESSION_ID || "";
 
-            const dailyTopUpUSD = state.dailyTopUpUSD[todayStr] || 0;
-            const dailyTopUpTokens = state.dailyTopUpTokens[todayStr] || 0;
-            const isSessionDisabled = state.disabledSessions[sessionId] === true;
-            const sessionCostCap = state.sessionCostLimits[sessionId]?.limit;
-            const sessionTokenCap = state.sessionTokenLimits[sessionId]?.limit;
+            const { effectiveDailyCostLimit, effectiveDailyTokenLimit, dailyTopUpUSD, dailyTopUpTokens } =
+              getEffectiveDailyLimits(state, options, todayStr);
+
+            const isSessionDisabled = sessionId ? state.disabledSessions[sessionId] === true : false;
+            const sessionCostCap = sessionId ? state.sessionCostLimits[sessionId]?.limit : undefined;
+            const sessionTokenCap = sessionId ? state.sessionTokenLimits[sessionId]?.limit : undefined;
+            const sessionMetrics = sessionId ? getSessionMetrics(sessionId) : null;
 
             let result = `=== OpenCode Budget Allowance Status (${todayStr}) ===\n`;
-            result += `• Today's Total Cost Spent: $${metrics.dailyCost.toFixed(2)}\n`;
-            result += `• Today's Tokens Used: ${metrics.dailyTokens.toLocaleString()}\n`;
+            result += `📊 Today's Total Spend (All Sessions):\n`;
+            result += `• Total Cost Spent: $${metrics.dailyCost.toFixed(2)}\n`;
+            result += `• Total Tokens Used: ${metrics.dailyTokens.toLocaleString()}\n`;
             result += `• Active Sessions Today: ${metrics.sessionCount}\n`;
             result += `• Average Cost / Session: $${metrics.avgCost.toFixed(2)}\n\n`;
 
-            result += `Global Status:\n`;
+            result += `⚙️ Global / Daily Allowance Status:\n`;
             if (state.globalDisabled === true) {
-              result += `• Budget Checks: GLOBALLY DISABLED (no limits enforced anywhere)\n\n`;
+              result += `• Budget Checks: GLOBALLY DISABLED (no limits enforced anywhere)\n`;
             } else {
               result += `• Budget Checks: Active (limits enforced)\n`;
-              result += `• Daily Cost Top-Up: ${dailyTopUpUSD > 0 ? `+$${dailyTopUpUSD.toFixed(2)}` : "None"}\n`;
-              if (dailyTopUpTokens > 0) {
-                result += `• Daily Token Top-Up: +${formatK(dailyTopUpTokens)}\n`;
+              if (effectiveDailyCostLimit !== Infinity) {
+                const dailyRemaining = Math.max(0, effectiveDailyCostLimit - metrics.dailyCost);
+                const dailyPct = effectiveDailyCostLimit > 0 ? ((metrics.dailyCost / effectiveDailyCostLimit) * 100).toFixed(1) : "0.0";
+                result += `• Daily Cost Cap: $${effectiveDailyCostLimit.toFixed(2)} (Spent: $${metrics.dailyCost.toFixed(2)} | Remaining: $${dailyRemaining.toFixed(2)} | ${dailyPct}% used)\n`;
+              } else {
+                result += `• Daily Cost Cap: Unlimited (no daily limit set)\n`;
               }
-              result += `\n`;
-            }
 
-            if (sessionId) {
-              result += `Current Session (${sessionId}):\n`;
+              if (effectiveDailyTokenLimit !== Infinity) {
+                const dailyTokensRemaining = Math.max(0, effectiveDailyTokenLimit - metrics.dailyTokens);
+                const dailyTokenPct = effectiveDailyTokenLimit > 0 ? ((metrics.dailyTokens / effectiveDailyTokenLimit) * 100).toFixed(1) : "0.0";
+                result += `• Daily Token Cap: ${formatK(effectiveDailyTokenLimit)} (Used: ${formatK(metrics.dailyTokens)} | Remaining: ${formatK(dailyTokensRemaining)} | ${dailyTokenPct}% used)\n`;
+              } else {
+                result += `• Daily Token Cap: Unlimited (no token ceiling set)\n`;
+              }
+
+              if (dailyTopUpUSD > 0 || dailyTopUpTokens > 0) {
+                const topUps: string[] = [];
+                if (dailyTopUpUSD > 0) topUps.push(`+$${dailyTopUpUSD.toFixed(2)}`);
+                if (dailyTopUpTokens > 0) topUps.push(`+${formatK(dailyTopUpTokens)} tokens`);
+                result += `• Daily Top-Up Active Today: ${topUps.join(", ")}\n`;
+              }
+            }
+            result += `\n`;
+
+            if (sessionId && sessionMetrics) {
+              const titleStr = sessionMetrics.title ? ` "${sessionMetrics.title}"` : "";
+              result += `🎯 Current Session (${sessionId}${titleStr}):\n`;
+              result += `• Session Cost Spent: $${sessionMetrics.cost.toFixed(2)}\n`;
+              result += `• Session Tokens Used: ${sessionMetrics.totalTokens.toLocaleString()} (Input: ${sessionMetrics.tokensInput.toLocaleString()} | Output: ${sessionMetrics.tokensOutput.toLocaleString()})\n`;
+
               if (state.globalDisabled === true) {
                 result += `• Status: Bypassed (Global Disable is active)\n`;
               } else if (isSessionDisabled) {
                 result += `• Status: Budget checks DISABLED for this session\n`;
-              } else if (sessionCostCap !== undefined) {
-                result += `• Session Cost Cap: $${sessionCostCap.toFixed(2)}\n`;
-              } else if (sessionTokenCap !== undefined) {
-                result += `• Session Token Cap: ${formatK(sessionTokenCap)}\n`;
               } else {
-                result += `• Session Cap: None (unlimited)\n`;
+                if (sessionCostCap !== undefined && sessionCostCap !== Infinity) {
+                  const remCost = Math.max(0, sessionCostCap - sessionMetrics.cost);
+                  const costPct = sessionCostCap > 0 ? ((sessionMetrics.cost / sessionCostCap) * 100).toFixed(1) : "0.0";
+                  result += `• Session Cost Cap: $${sessionCostCap.toFixed(2)} (Spent: $${sessionMetrics.cost.toFixed(2)} | Remaining: $${remCost.toFixed(2)} | ${costPct}% used)\n`;
+                } else {
+                  result += `• Session Cost Cap: None (unlimited)\n`;
+                }
+
+                if (sessionTokenCap !== undefined && sessionTokenCap !== Infinity) {
+                  const remTok = Math.max(0, sessionTokenCap - sessionMetrics.totalTokens);
+                  const tokPct = sessionTokenCap > 0 ? ((sessionMetrics.totalTokens / sessionTokenCap) * 100).toFixed(1) : "0.0";
+                  result += `• Session Token Cap: ${formatK(sessionTokenCap)} (Used: ${formatK(sessionMetrics.totalTokens)} | Remaining: ${formatK(remTok)} | ${tokPct}% used)\n`;
+                } else {
+                  result += `• Session Token Cap: None (unlimited)\n`;
+                }
               }
             }
 
@@ -541,20 +643,34 @@ export default {
         }),
 
         budget_set_limit: tool({
-          description: "Set a dollar cost or token budget limit for the current session or add to the global daily allowance.",
+          description: "Set or top-up a cost ($) or token budget limit for the current session or daily allowance. Reports previous limit, spend, and remaining balance.",
           args: {
-            amount: tool.schema.number().describe("The budget limit amount (e.g. 15 for $15, or 500000 for 500k tokens)"),
+            amount: tool.schema.number().describe("The budget limit amount (e.g. 20 for $20, or 500000 for 500k tokens)"),
             type: tool.schema.enum(["cost", "token"]).default("cost").describe("Whether this limit is cost (USD) or token count"),
             scope: tool.schema.enum(["session", "daily"]).default("session").describe("Whether to apply to active session or today's daily limit"),
+            mode: tool.schema.enum(["set", "topup"]).default("set").describe("'set' sets the total target limit (replaces/defines cap); 'topup' adds onto the existing limit/topup"),
           },
           async execute(args, context) {
             const state = loadState();
             const todayStr = new Date().toISOString().split("T")[0];
             const sessionId = context?.sessionID || process.env.OPENCODE_SESSION_ID || "ACTIVE_SESSION";
+            const metrics = getOverviewMetrics();
+            const sessionMetrics = sessionId ? getSessionMetrics(sessionId) : null;
 
             if (args.scope === "daily") {
+              const { baseDailyCost, baseDailyTokens } = getEffectiveDailyLimits(state, options, todayStr);
               if (args.type === "cost") {
-                state.dailyTopUpUSD[todayStr] = (state.dailyTopUpUSD[todayStr] || 0) + args.amount;
+                const prevTopUp = state.dailyTopUpUSD[todayStr] || 0;
+                let newTopUp = 0;
+                let newEffective = 0;
+                if (args.mode === "topup") {
+                  newTopUp = prevTopUp + args.amount;
+                  newEffective = (baseDailyCost > 0 ? baseDailyCost : 0) + newTopUp;
+                } else {
+                  newEffective = args.amount;
+                  newTopUp = Math.max(0, args.amount - baseDailyCost);
+                }
+                state.dailyTopUpUSD[todayStr] = newTopUp;
                 state.history.push({
                   id: `tool_${Date.now()}`,
                   timestamp: Date.now(),
@@ -566,9 +682,26 @@ export default {
                   amount: args.amount,
                 });
                 saveState(state);
-                return `✅ Added +$${args.amount.toFixed(2)} to daily budget allowance for ${todayStr}.`;
+
+                const remaining = Math.max(0, newEffective - metrics.dailyCost);
+                const pct = newEffective > 0 ? ((metrics.dailyCost / newEffective) * 100).toFixed(1) : "0.0";
+                return (
+                  `✅ ${args.mode === "topup" ? "Topped up" : "Set"} daily cost budget cap to $${newEffective.toFixed(2)} for today (${todayStr}).\n` +
+                  `• Spent today so far: $${metrics.dailyCost.toFixed(2)} across ${metrics.sessionCount} sessions\n` +
+                  `• Remaining / Pending daily allowance: $${remaining.toFixed(2)} (${pct}% used)`
+                );
               } else {
-                state.dailyTopUpTokens[todayStr] = (state.dailyTopUpTokens[todayStr] || 0) + args.amount;
+                const prevTopUp = state.dailyTopUpTokens[todayStr] || 0;
+                let newTopUp = 0;
+                let newEffective = 0;
+                if (args.mode === "topup") {
+                  newTopUp = prevTopUp + args.amount;
+                  newEffective = (baseDailyTokens > 0 ? baseDailyTokens : 0) + newTopUp;
+                } else {
+                  newEffective = args.amount;
+                  newTopUp = Math.max(0, args.amount - baseDailyTokens);
+                }
+                state.dailyTopUpTokens[todayStr] = newTopUp;
                 state.history.push({
                   id: `tool_${Date.now()}`,
                   timestamp: Date.now(),
@@ -580,12 +713,24 @@ export default {
                   amount: args.amount,
                 });
                 saveState(state);
-                return `✅ Added +${formatK(args.amount)} tokens to daily budget allowance for ${todayStr}.`;
+
+                const remaining = Math.max(0, newEffective - metrics.dailyTokens);
+                const pct = newEffective > 0 ? ((metrics.dailyTokens / newEffective) * 100).toFixed(1) : "0.0";
+                return (
+                  `✅ ${args.mode === "topup" ? "Topped up" : "Set"} daily token budget cap to ${formatK(newEffective)} tokens for today (${todayStr}).\n` +
+                  `• Tokens used today: ${metrics.dailyTokens.toLocaleString()}\n` +
+                  `• Remaining / Pending daily tokens: ${formatK(remaining)} (${pct}% used)`
+                );
               }
             } else {
               delete state.disabledSessions[sessionId];
+              const sessionCostSpent = sessionMetrics?.cost ?? 0;
+              const sessionTokensSpent = sessionMetrics?.totalTokens ?? 0;
+
               if (args.type === "cost") {
-                state.sessionCostLimits[sessionId] = { limit: args.amount, model: "AI_TOOL" };
+                const currentLimit = state.sessionCostLimits[sessionId]?.limit;
+                const newLimit = args.mode === "topup" && currentLimit !== undefined ? currentLimit + args.amount : args.amount;
+                state.sessionCostLimits[sessionId] = { limit: newLimit, model: "AI_TOOL" };
                 state.history.push({
                   id: `tool_${Date.now()}`,
                   timestamp: Date.now(),
@@ -597,9 +742,18 @@ export default {
                   amount: args.amount,
                 });
                 saveState(state);
-                return `✅ Set session cost budget cap to $${args.amount.toFixed(2)} for session ${sessionId}.`;
+
+                const remaining = Math.max(0, newLimit - sessionCostSpent);
+                const pct = newLimit > 0 ? ((sessionCostSpent / newLimit) * 100).toFixed(1) : "0.0";
+                return (
+                  `✅ ${args.mode === "topup" ? "Increased" : "Set"} session cost budget cap to $${newLimit.toFixed(2)} for session ${sessionId}.\n` +
+                  `• Spent so far in this session: $${sessionCostSpent.toFixed(2)}\n` +
+                  `• Remaining / Pending session allowance: $${remaining.toFixed(2)} (${pct}% used)`
+                );
               } else {
-                state.sessionTokenLimits[sessionId] = { limit: args.amount, model: "AI_TOOL" };
+                const currentLimit = state.sessionTokenLimits[sessionId]?.limit;
+                const newLimit = args.mode === "topup" && currentLimit !== undefined ? currentLimit + args.amount : args.amount;
+                state.sessionTokenLimits[sessionId] = { limit: newLimit, model: "AI_TOOL" };
                 state.history.push({
                   id: `tool_${Date.now()}`,
                   timestamp: Date.now(),
@@ -611,7 +765,14 @@ export default {
                   amount: args.amount,
                 });
                 saveState(state);
-                return `✅ Set session token budget cap to ${formatK(args.amount)} tokens for session ${sessionId}.`;
+
+                const remaining = Math.max(0, newLimit - sessionTokensSpent);
+                const pct = newLimit > 0 ? ((sessionTokensSpent / newLimit) * 100).toFixed(1) : "0.0";
+                return (
+                  `✅ ${args.mode === "topup" ? "Increased" : "Set"} session token budget cap to ${formatK(newLimit)} tokens for session ${sessionId}.\n` +
+                  `• Tokens used in this session: ${sessionTokensSpent.toLocaleString()}\n` +
+                  `• Remaining / Pending session tokens: ${formatK(remaining)} (${pct}% used)`
+                );
               }
             }
           },
