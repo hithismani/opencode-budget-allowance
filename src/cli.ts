@@ -11,6 +11,8 @@ import {
   getSessionMetrics,
   getEffectiveDailyLimits,
   applyDailyLimit,
+  applySessionLimit,
+  crossScopeNote,
   loadPluginOptions,
   localDateStr,
   formatHistory,
@@ -450,7 +452,11 @@ async function main() {
       const parsed = parseAmount(amountStr);
       if (parsed) {
         const mode = isTopUp ? "topup" : "set";
-        const { newEffective } = applyDailyLimit(state, options, todayStr, parsed.type, parsed.value, mode);
+        const { newEffective, cleared } = applyDailyLimit(state, options, todayStr, parsed.type, parsed.value, mode);
+        const activeDaily = getActiveSession();
+        const note = activeDaily
+          ? crossScopeNote(state, options, todayStr, activeDaily.id, { scope: "daily", type: parsed.type, amount: newEffective })
+          : null;
         state.history.push({
           id: `cli_${Date.now()}`,
           timestamp: Date.now(),
@@ -462,6 +468,8 @@ async function main() {
           amount: parsed.value,
         });
         saveState(state);
+        if (cleared) console.log(`   ${cleared}`);
+        if (note) console.log(`   ${note}`);
         if (parsed.type === "cost") {
           const remaining = Math.max(0, newEffective - metrics.dailyCost);
           const pct = newEffective > 0 ? ((metrics.dailyCost / newEffective) * 100).toFixed(1) : "0.0";
@@ -488,43 +496,34 @@ async function main() {
           delete state.disabledSessions[active.id];
           const sessionMetrics = getSessionMetrics(active.id);
           const name = sessionMetrics.title || active.title ? `"${sessionMetrics.title || active.title}"` : active.id;
+          const { newLimit, cleared } = applySessionLimit(state, active.id, parsed.type, parsed.value, "set", "CLI_MANUAL");
+          const note = crossScopeNote(state, options, todayStr, active.id, { scope: "session", type: parsed.type, amount: newLimit });
+          state.history.push({
+            id: `cli_${Date.now()}`,
+            timestamp: Date.now(),
+            dateStr: todayStr,
+            sessionId: active.id,
+            model: "CLI_MANUAL",
+            scope: "session",
+            type: parsed.type,
+            amount: parsed.value,
+          });
+          saveState(state);
           if (parsed.type === "cost") {
-            state.sessionCostLimits[active.id] = { limit: parsed.value, model: "CLI_MANUAL" };
-            state.history.push({
-              id: `cli_${Date.now()}`,
-              timestamp: Date.now(),
-              dateStr: todayStr,
-              sessionId: active.id,
-              model: "CLI_MANUAL",
-              scope: "session",
-              type: "cost",
-              amount: parsed.value,
-            });
-            saveState(state);
-            const remaining = Math.max(0, parsed.value - sessionMetrics.cost);
-            const pct = parsed.value > 0 ? ((sessionMetrics.cost / parsed.value) * 100).toFixed(1) : "0.0";
-            console.log(`✅ Locked session allowance cap at $${parsed.value.toFixed(2)} for session ${name}`);
+            const remaining = Math.max(0, newLimit - sessionMetrics.cost);
+            const pct = newLimit > 0 ? ((sessionMetrics.cost / newLimit) * 100).toFixed(1) : "0.0";
+            console.log(`✅ Locked session allowance cap at $${newLimit.toFixed(2)} for session ${name}`);
             console.log(`   • Spent so far in this session: $${sessionMetrics.cost.toFixed(2)}`);
             console.log(`   • Remaining / Pending session allowance: \x1b[36m$${remaining.toFixed(2)}\x1b[0m (${pct}% used)`);
           } else {
-            state.sessionTokenLimits[active.id] = { limit: parsed.value, model: "CLI_MANUAL" };
-            state.history.push({
-              id: `cli_${Date.now()}`,
-              timestamp: Date.now(),
-              dateStr: todayStr,
-              sessionId: active.id,
-              model: "CLI_MANUAL",
-              scope: "session",
-              type: "token",
-              amount: parsed.value,
-            });
-            saveState(state);
-            const remaining = Math.max(0, parsed.value - sessionMetrics.totalTokens);
-            const pct = parsed.value > 0 ? ((sessionMetrics.totalTokens / parsed.value) * 100).toFixed(1) : "0.0";
-            console.log(`✅ Locked session allowance cap at ${formatK(parsed.value)} tokens for session ${name}`);
+            const remaining = Math.max(0, newLimit - sessionMetrics.totalTokens);
+            const pct = newLimit > 0 ? ((sessionMetrics.totalTokens / newLimit) * 100).toFixed(1) : "0.0";
+            console.log(`✅ Locked session allowance cap at ${formatK(newLimit)} tokens for session ${name}`);
             console.log(`   • Tokens used in this session: ${sessionMetrics.totalTokens.toLocaleString()}`);
             console.log(`   • Remaining / Pending session tokens: \x1b[36m${formatK(remaining)}\x1b[0m (${pct}% used)`);
           }
+          if (cleared) console.log(`   ${cleared}`);
+          if (note) console.log(`   ${note}`);
         } else {
           console.log(`⚠️ No active session found — cannot set a session cap.`);
         }
@@ -582,7 +581,11 @@ async function main() {
     const parsed = parseAmount(amountStr);
     if (parsed) {
       const mode = isTopUp ? "topup" : "set";
-      const { newEffective } = applyDailyLimit(state, options, todayStr, parsed.type, parsed.value, mode);
+      const { newEffective, cleared } = applyDailyLimit(state, options, todayStr, parsed.type, parsed.value, mode);
+      const activeDaily = getActiveSession();
+      const note = activeDaily
+        ? crossScopeNote(state, options, todayStr, activeDaily.id, { scope: "daily", type: parsed.type, amount: newEffective })
+        : null;
       state.history.push({
         id: `cli_${Date.now()}`,
         timestamp: Date.now(),
@@ -594,6 +597,8 @@ async function main() {
         amount: parsed.value,
       });
       saveState(state);
+      if (cleared) console.log(`   ${cleared}`);
+      if (note) console.log(`   ${note}`);
       if (parsed.type === "cost") {
         const remaining = Math.max(0, newEffective - metrics.dailyCost);
         const pct = newEffective > 0 ? ((metrics.dailyCost / newEffective) * 100).toFixed(1) : "0.0";
@@ -632,43 +637,35 @@ async function main() {
 
         if (parsed) {
           delete state.disabledSessions[targetSession.id];
+          const { newLimit, cleared } = applySessionLimit(state, targetSession.id, parsed.type, parsed.value, "set", "CLI_MANUAL");
+          const note = crossScopeNote(state, options, todayStr, targetSession.id, { scope: "session", type: parsed.type, amount: newLimit });
+          state.history.push({
+            id: `cli_${Date.now()}`,
+            timestamp: Date.now(),
+            dateStr: todayStr,
+            sessionId: targetSession.id,
+            model: "CLI_MANUAL",
+            scope: "session",
+            type: parsed.type,
+            amount: parsed.value,
+          });
+          saveState(state);
           if (parsed.type === "cost") {
-            state.sessionCostLimits[targetSession.id] = { limit: parsed.value, model: "CLI_MANUAL" };
-            state.history.push({
-              id: `cli_${Date.now()}`,
-              timestamp: Date.now(),
-              dateStr: todayStr,
-              sessionId: targetSession.id,
-              model: "CLI_MANUAL",
-              scope: "session",
-              type: "cost",
-              amount: parsed.value,
-            });
-            saveState(state);
-            const remaining = Math.max(0, parsed.value - sMetrics.cost);
-            const pct = parsed.value > 0 ? ((sMetrics.cost / parsed.value) * 100).toFixed(1) : "0.0";
-            console.log(`\n\x1b[32m✅ Locked session allowance cap at $${parsed.value.toFixed(2)}!\x1b[0m`);
+            const remaining = Math.max(0, newLimit - sMetrics.cost);
+            const pct = newLimit > 0 ? ((sMetrics.cost / newLimit) * 100).toFixed(1) : "0.0";
+            console.log(`\n\x1b[32m✅ Locked session allowance cap at $${newLimit.toFixed(2)}!\x1b[0m`);
             console.log(`   • Spent so far: $${sMetrics.cost.toFixed(2)}`);
-            console.log(`   • Remaining / Pending session allowance: \x1b[36m$${remaining.toFixed(2)}\x1b[0m (${pct}% used)\n`);
+            console.log(`   • Remaining / Pending session allowance: \x1b[36m$${remaining.toFixed(2)}\x1b[0m (${pct}% used)`);
           } else {
-            state.sessionTokenLimits[targetSession.id] = { limit: parsed.value, model: "CLI_MANUAL" };
-            state.history.push({
-              id: `cli_${Date.now()}`,
-              timestamp: Date.now(),
-              dateStr: todayStr,
-              sessionId: targetSession.id,
-              model: "CLI_MANUAL",
-              scope: "session",
-              type: "token",
-              amount: parsed.value,
-            });
-            saveState(state);
-            const remaining = Math.max(0, parsed.value - sMetrics.totalTokens);
-            const pct = parsed.value > 0 ? ((sMetrics.totalTokens / parsed.value) * 100).toFixed(1) : "0.0";
-            console.log(`\n\x1b[32m✅ Locked session allowance cap at ${formatK(parsed.value)} tokens!\x1b[0m`);
+            const remaining = Math.max(0, newLimit - sMetrics.totalTokens);
+            const pct = newLimit > 0 ? ((sMetrics.totalTokens / newLimit) * 100).toFixed(1) : "0.0";
+            console.log(`\n\x1b[32m✅ Locked session allowance cap at ${formatK(newLimit)} tokens!\x1b[0m`);
             console.log(`   • Tokens used so far: ${sMetrics.totalTokens.toLocaleString()}`);
-            console.log(`   • Remaining / Pending session tokens: \x1b[36m${formatK(remaining)}\x1b[0m (${pct}% used)\n`);
+            console.log(`   • Remaining / Pending session tokens: \x1b[36m${formatK(remaining)}\x1b[0m (${pct}% used)`);
           }
+          if (cleared) console.log(`   ${cleared}`);
+          if (note) console.log(`   ${note}`);
+          console.log("");
         } else {
           console.log(`\n❌ Invalid cap amount.\n`);
         }

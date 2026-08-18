@@ -10,8 +10,10 @@ Instructions:
    - "on global" or "global on": Re-enable budget checks globally using the `budget_enable` tool (with scope: "global") or by running `bun run ~/.config/opencode/plugins/cli.ts on global`.
    - "off": Disable budget checks for the active session using `budget_disable` (with scope: "session") or `bun run ~/.config/opencode/plugins/cli.ts off`.
    - "on": Re-enable budget checks for the active session using `budget_enable` (with scope: "session") or `bun run ~/.config/opencode/plugins/cli.ts on`.
-   - "daily <amount>" (e.g. "daily 25", "daily 2m", "daily +10"): Set or top up today's daily allowance using `budget_set_limit` (with scope: "daily", mode: "set" or "topup") or `bun run ~/.config/opencode/plugins/cli.ts daily <amount>`.
-   - "<amount>" (e.g. "15", "500k"): Set a budget limit for the active session using `budget_set_limit` (with scope: "session") or `bun run ~/.config/opencode/plugins/cli.ts <amount>`.
+   - "daily <amount>" (e.g. "daily 25", "daily $40", "daily +10"): Set today's daily USD allowance with `budget_set_limit` (scope: "daily", type: "cost"). "daily 2m" / "daily 500k" is tokens (type: "token").
+   - "<amount>" (e.g. "15", "40", "$40", "40 dollars"): USD session cap. Call `budget_set_limit` with type: "cost" (never "token").
+   - "<amount>k/m" (e.g. "500k", "2m"): token session cap. Call `budget_set_limit` with type: "token" and the raw count (500000, 2000000).
+   - Bare numbers are always dollars. "dollars" / "usd" / "$" means type: "cost". Never treat 15 or 40 as 15/40 tokens.
    - "history": Show top-up audit history log using the `budget_get_history` tool (or `bun run ~/.config/opencode/plugins/cli.ts history`).
    - Always confirm the change with the current spend, new cap, and remaining/pending allowance.
 

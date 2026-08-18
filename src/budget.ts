@@ -275,6 +275,33 @@ export function getEffectiveDailyLimits(state: BudgetState, options: BudgetOptio
   };
 }
 
+export function formatCap(type: "cost" | "token", amount: number): string {
+  return type === "cost" ? `$${amount.toFixed(2)}` : `${formatK(amount)} tokens`;
+}
+
+function clearSibling(state: BudgetState, scope: "daily" | "session", type: "cost" | "token", id: string): string | null {
+  if (scope === "daily") {
+    const other = type === "cost" ? "dailyTopUpTokens" : "dailyTopUpUSD";
+    const prev = state[other][id];
+    if (!prev) return null;
+    delete state[other][id];
+    return type === "cost"
+      ? `Cleared daily token cap (${formatK(prev)}) — daily is cost-only.`
+      : `Cleared daily cost cap ($${prev.toFixed(2)}) — daily is token-only.`;
+  }
+  if (type === "cost" && state.sessionTokenLimits[id]) {
+    const prev = state.sessionTokenLimits[id].limit;
+    delete state.sessionTokenLimits[id];
+    return `Cleared session token cap (${formatK(prev)}) — this session is cost-only.`;
+  }
+  if (type === "token" && state.sessionCostLimits[id]) {
+    const prev = state.sessionCostLimits[id].limit;
+    delete state.sessionCostLimits[id];
+    return `Cleared session cost cap ($${prev.toFixed(2)}) — this session is token-only.`;
+  }
+  return null;
+}
+
 export function applyDailyLimit(
   state: BudgetState,
   options: BudgetOptions,
@@ -282,7 +309,7 @@ export function applyDailyLimit(
   type: "cost" | "token",
   amount: number,
   mode: "set" | "topup"
-): { newEffective: number; newTopUp: number } {
+): { newEffective: number; newTopUp: number; cleared: string | null } {
   const { baseDailyCost, baseDailyTokens } = getEffectiveDailyLimits(state, options, dateStr);
   const base = type === "cost" ? baseDailyCost : baseDailyTokens;
   const key = type === "cost" ? "dailyTopUpUSD" : "dailyTopUpTokens";
@@ -290,7 +317,54 @@ export function applyDailyLimit(
   const newTopUp = mode === "topup" ? prevTopUp + amount : amount - base;
   const newEffective = base + newTopUp;
   state[key][dateStr] = newTopUp;
-  return { newEffective, newTopUp };
+  const cleared = clearSibling(state, "daily", type, dateStr);
+  return { newEffective, newTopUp, cleared };
+}
+
+export function applySessionLimit(
+  state: BudgetState,
+  sessionId: string,
+  type: "cost" | "token",
+  amount: number,
+  mode: "set" | "topup",
+  model = "AI_TOOL"
+): { newLimit: number; cleared: string | null } {
+  const map = type === "cost" ? state.sessionCostLimits : state.sessionTokenLimits;
+  const current = map[sessionId]?.limit;
+  const newLimit = mode === "topup" && current !== undefined ? current + amount : amount;
+  map[sessionId] = { limit: newLimit, model };
+  const cleared = clearSibling(state, "session", type, sessionId);
+  return { newLimit, cleared };
+}
+
+export function crossScopeNote(
+  state: BudgetState,
+  options: BudgetOptions,
+  todayStr: string,
+  sessionId: string,
+  justSet: { scope: "daily" | "session"; type: "cost" | "token"; amount: number }
+): string | null {
+  const daily = getEffectiveDailyLimits(state, options, todayStr);
+  const dailyType: "cost" | "token" | null =
+    daily.effectiveDailyCostLimit !== Infinity ? "cost" : daily.effectiveDailyTokenLimit !== Infinity ? "token" : null;
+  const dailyAmt =
+    dailyType === "cost" ? daily.effectiveDailyCostLimit : dailyType === "token" ? daily.effectiveDailyTokenLimit : null;
+  const sessionType: "cost" | "token" | null = state.sessionCostLimits[sessionId]
+    ? "cost"
+    : state.sessionTokenLimits[sessionId]
+      ? "token"
+      : null;
+  const sessionAmt =
+    sessionType === "cost"
+      ? state.sessionCostLimits[sessionId].limit
+      : sessionType === "token"
+        ? state.sessionTokenLimits[sessionId].limit
+        : null;
+  if (!dailyType || dailyAmt == null || !sessionType || sessionAmt == null) return null;
+  if (justSet.scope === "session") {
+    return `Btw daily was ${formatCap(dailyType, dailyAmt)} — ignored for this session. This session uses ${formatCap(sessionType, sessionAmt)}.`;
+  }
+  return `Btw this session still has ${formatCap(sessionType, sessionAmt)} — that session override ignores this daily ${formatCap(dailyType, dailyAmt)}.`;
 }
 
 // ============================================================================
@@ -385,29 +459,35 @@ export function checkBudgetStatus(
     providerModelTokenBudgets = {},
   } = options;
 
+  const sessionCostOverride = sessionId ? state.sessionCostLimits[sessionId]?.limit : undefined;
+  const sessionTokenOverride = sessionId ? state.sessionTokenLimits[sessionId]?.limit : undefined;
+  const hasSessionOverride = sessionCostOverride !== undefined || sessionTokenOverride !== undefined;
+
   const providerNestedCost = providerId && providerModelCostBudgets[providerId]
     ? findMatchingLimit(providerModelCostBudgets[providerId], [modelId, fullModelKey])
     : undefined;
 
-  const baseSessionCostCap =
-    (sessionId ? state.sessionCostLimits[sessionId]?.limit : undefined) ??
-    providerNestedCost ??
-    findMatchingLimit(modelCostBudgets, [fullModelKey, modelId]) ??
-    findMatchingLimit(providerCostBudgets, [providerId]) ??
-    defaultSessionLimitUSD;
+  const baseSessionCostCap = hasSessionOverride
+    ? (sessionCostOverride ?? Infinity)
+    : providerNestedCost ??
+      findMatchingLimit(modelCostBudgets, [fullModelKey, modelId]) ??
+      findMatchingLimit(providerCostBudgets, [providerId]) ??
+      defaultSessionLimitUSD;
 
   const providerNestedToken = providerId && providerModelTokenBudgets[providerId]
     ? findMatchingLimit(providerModelTokenBudgets[providerId], [modelId, fullModelKey])
     : undefined;
 
-  const baseSessionTokenCap =
-    (sessionId ? state.sessionTokenLimits[sessionId]?.limit : undefined) ??
-    providerNestedToken ??
-    findMatchingLimit(modelTokenBudgets, [fullModelKey, modelId]) ??
-    findMatchingLimit(providerTokenBudgets, [providerId]) ??
-    defaultSessionTokenLimit;
+  const baseSessionTokenCap = hasSessionOverride
+    ? (sessionTokenOverride ?? Infinity)
+    : providerNestedToken ??
+      findMatchingLimit(modelTokenBudgets, [fullModelKey, modelId]) ??
+      findMatchingLimit(providerTokenBudgets, [providerId]) ??
+      defaultSessionTokenLimit;
 
-  const { effectiveDailyCostLimit, effectiveDailyTokenLimit } = getEffectiveDailyLimits(state, options, todayStr);
+  const daily = getEffectiveDailyLimits(state, options, todayStr);
+  const effectiveDailyCostLimit = hasSessionOverride ? Infinity : daily.effectiveDailyCostLimit;
+  const effectiveDailyTokenLimit = hasSessionOverride ? Infinity : daily.effectiveDailyTokenLimit;
 
   if (
     baseSessionCostCap === Infinity &&
@@ -791,22 +871,32 @@ export default {
         }),
 
         budget_set_limit: tool({
-          description: "Set or top-up a cost ($) or token budget limit for the current session or daily allowance. Reports previous limit, spend, and remaining balance.",
+          description: "Set or top-up a budget. Bare numbers are USD (type=cost). Use type=token only when the user said k/m/b or an explicit token count (e.g. 500k).",
           args: {
-            amount: tool.schema.number().describe("The budget limit amount (e.g. 20 for $20, or 500000 for 500k tokens)"),
-            type: tool.schema.enum(["cost", "token"]).default("cost").describe("Whether this limit is cost (USD) or token count"),
+            amount: tool.schema.number().describe("USD if type=cost (default). Raw token count if type=token (e.g. 500000 for 500k)."),
+            type: tool.schema.enum(["cost", "token"]).default("cost").describe("cost = dollars (default for 15, 40, $40). token = only for 500k / 2m / explicit tokens."),
             scope: tool.schema.enum(["session", "daily"]).default("session").describe("Whether to apply to active session or today's daily limit"),
             mode: tool.schema.enum(["set", "topup"]).default("set").describe("'set' sets the total target limit (replaces/defines cap); 'topup' adds onto the existing limit/topup"),
           },
           async execute(args, context) {
+            const limitType = args.type === "token" ? "token" : "cost";
+            const mode = args.mode === "topup" ? "topup" : "set";
+            if (limitType === "token" && args.amount > 0 && args.amount < 1000) {
+              return `⚠️ ${args.amount} tokens is not a real cap. Bare numbers are USD — re-call with type="cost" for $${args.amount.toFixed(2)}, or type="token" with 1000+ (e.g. 500000 for 500k).`;
+            }
+
             const state = loadState();
             const todayStr = localDateStr();
             const sessionId = context?.sessionID || process.env.OPENCODE_SESSION_ID || "ACTIVE_SESSION";
             const metrics = getOverviewMetrics();
             const sessionMetrics = sessionId ? getSessionMetrics(sessionId) : null;
 
+            const extras: string[] = [];
             if (args.scope === "daily") {
-              const { newEffective } = applyDailyLimit(state, options, todayStr, args.type, args.amount, args.mode);
+              const { newEffective, cleared } = applyDailyLimit(state, options, todayStr, limitType, args.amount, mode);
+              if (cleared) extras.push(cleared);
+              const note = crossScopeNote(state, options, todayStr, sessionId, { scope: "daily", type: limitType, amount: newEffective });
+              if (note) extras.push(note);
               state.history.push({
                 id: `tool_${Date.now()}`,
                 timestamp: Date.now(),
@@ -814,78 +904,69 @@ export default {
                 sessionId: "GLOBAL_DAILY",
                 model: "AI_TOOL",
                 scope: "daily",
-                type: args.type,
+                type: limitType,
                 amount: args.amount,
               });
               saveState(state);
 
-              if (args.type === "cost") {
+              const tail = extras.length ? `\n${extras.join("\n")}` : "";
+              if (limitType === "cost") {
                 const remaining = Math.max(0, newEffective - metrics.dailyCost);
                 const pct = newEffective > 0 ? ((metrics.dailyCost / newEffective) * 100).toFixed(1) : "0.0";
                 return (
-                  `✅ ${args.mode === "topup" ? "Topped up" : "Set"} daily cost budget cap to $${newEffective.toFixed(2)} for today (${todayStr}).\n` +
+                  `✅ ${mode === "topup" ? "Topped up" : "Set"} daily cost budget cap to $${newEffective.toFixed(2)} for today (${todayStr}).\n` +
                   `• Spent today so far: $${metrics.dailyCost.toFixed(2)} across ${metrics.sessionCount} sessions\n` +
-                  `• Remaining / Pending daily allowance: $${remaining.toFixed(2)} (${pct}% used)`
+                  `• Remaining / Pending daily allowance: $${remaining.toFixed(2)} (${pct}% used)` +
+                  tail
                 );
               } else {
                 const remaining = Math.max(0, newEffective - metrics.dailyTokens);
                 const pct = newEffective > 0 ? ((metrics.dailyTokens / newEffective) * 100).toFixed(1) : "0.0";
                 return (
-                  `✅ ${args.mode === "topup" ? "Topped up" : "Set"} daily token budget cap to ${formatK(newEffective)} tokens for today (${todayStr}).\n` +
+                  `✅ ${mode === "topup" ? "Topped up" : "Set"} daily token budget cap to ${formatK(newEffective)} tokens for today (${todayStr}).\n` +
                   `• Tokens used today: ${metrics.dailyTokens.toLocaleString()}\n` +
-                  `• Remaining / Pending daily tokens: ${formatK(remaining)} (${pct}% used)`
+                  `• Remaining / Pending daily tokens: ${formatK(remaining)} (${pct}% used)` +
+                  tail
                 );
               }
             } else {
               delete state.disabledSessions[sessionId];
               const sessionCostSpent = sessionMetrics?.cost ?? 0;
               const sessionTokensSpent = sessionMetrics?.totalTokens ?? 0;
+              const { newLimit, cleared } = applySessionLimit(state, sessionId, limitType, args.amount, mode);
+              if (cleared) extras.push(cleared);
+              const note = crossScopeNote(state, options, todayStr, sessionId, { scope: "session", type: limitType, amount: newLimit });
+              if (note) extras.push(note);
+              state.history.push({
+                id: `tool_${Date.now()}`,
+                timestamp: Date.now(),
+                dateStr: todayStr,
+                sessionId,
+                model: "AI_TOOL",
+                scope: "session",
+                type: limitType,
+                amount: args.amount,
+              });
+              saveState(state);
 
-              if (args.type === "cost") {
-                const currentLimit = state.sessionCostLimits[sessionId]?.limit;
-                const newLimit = args.mode === "topup" && currentLimit !== undefined ? currentLimit + args.amount : args.amount;
-                state.sessionCostLimits[sessionId] = { limit: newLimit, model: "AI_TOOL" };
-                state.history.push({
-                  id: `tool_${Date.now()}`,
-                  timestamp: Date.now(),
-                  dateStr: todayStr,
-                  sessionId,
-                  model: "AI_TOOL",
-                  scope: "session",
-                  type: "cost",
-                  amount: args.amount,
-                });
-                saveState(state);
-
+              const tail = extras.length ? `\n${extras.join("\n")}` : "";
+              if (limitType === "cost") {
                 const remaining = Math.max(0, newLimit - sessionCostSpent);
                 const pct = newLimit > 0 ? ((sessionCostSpent / newLimit) * 100).toFixed(1) : "0.0";
                 return (
-                  `✅ ${args.mode === "topup" ? "Increased" : "Set"} session cost budget cap to $${newLimit.toFixed(2)} for session ${sessionId}.\n` +
+                  `✅ ${mode === "topup" ? "Increased" : "Set"} session cost budget cap to $${newLimit.toFixed(2)} for session ${sessionId}.\n` +
                   `• Spent so far in this session: $${sessionCostSpent.toFixed(2)}\n` +
-                  `• Remaining / Pending session allowance: $${remaining.toFixed(2)} (${pct}% used)`
+                  `• Remaining / Pending session allowance: $${remaining.toFixed(2)} (${pct}% used)` +
+                  tail
                 );
               } else {
-                const currentLimit = state.sessionTokenLimits[sessionId]?.limit;
-                const newLimit = args.mode === "topup" && currentLimit !== undefined ? currentLimit + args.amount : args.amount;
-                state.sessionTokenLimits[sessionId] = { limit: newLimit, model: "AI_TOOL" };
-                state.history.push({
-                  id: `tool_${Date.now()}`,
-                  timestamp: Date.now(),
-                  dateStr: todayStr,
-                  sessionId,
-                  model: "AI_TOOL",
-                  scope: "session",
-                  type: "token",
-                  amount: args.amount,
-                });
-                saveState(state);
-
                 const remaining = Math.max(0, newLimit - sessionTokensSpent);
                 const pct = newLimit > 0 ? ((sessionTokensSpent / newLimit) * 100).toFixed(1) : "0.0";
                 return (
-                  `✅ ${args.mode === "topup" ? "Increased" : "Set"} session token budget cap to ${formatK(newLimit)} tokens for session ${sessionId}.\n` +
+                  `✅ ${mode === "topup" ? "Increased" : "Set"} session token budget cap to ${formatK(newLimit)} tokens for session ${sessionId}.\n` +
                   `• Tokens used in this session: ${sessionTokensSpent.toLocaleString()}\n` +
-                  `• Remaining / Pending session tokens: ${formatK(remaining)} (${pct}% used)`
+                  `• Remaining / Pending session tokens: ${formatK(remaining)} (${pct}% used)` +
+                  tail
                 );
               }
             }
