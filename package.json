@@ -1,9 +1,15 @@
 {
   "name": "opencode-budget-allowance",
-  "version": "1.0.0",
-  "description": "Standalone session and daily budget allowance plugin for opencode",
+  "version": "1.1.0",
+  "description": "Standalone session and daily budget allowance plugin & offline interactive CLI for opencode",
   "main": "./src/budget.ts",
   "type": "module",
+  "bin": {
+    "budget-allowance": "./src/cli.ts"
+  },
+  "scripts": {
+    "cli": "bun run ./src/cli.ts"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/hithismani/opencode-budget-allowance.git"
@@ -19,7 +25,8 @@
     "opencode-plugin",
     "budget",
     "allowance",
-    "tokens"
+    "tokens",
+    "cli"
   ],
   "peerDependencies": {
     "@opencode-ai/plugin": "*"

@@ -3,7 +3,39 @@
 [![GitHub Repository](https://img.shields.io/badge/GitHub-hithismani%2Fopencode--budget--allowance-blue)](https://github.com/hithismani/opencode-budget-allowance)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Standalone session and daily budget allowance plugin for **opencode** created by [@hithismani](https://github.com/hithismani).
+Standalone session and daily budget allowance plugin & **100% Offline Interactive CLI** for **opencode** created by [@hithismani](https://github.com/hithismani).
+
+---
+
+## 💻 Offline Interactive CLI (0 LLM Tokens Burned)
+
+In addition to the opencode slash command, this plugin includes a **100% offline terminal CLI tool** (`bun run src/cli.ts` or `npx budget-allowance`).
+
+You can check your spending stats, set daily/session limits, or disable budgets **without calling any LLMs or burning a single API token!**
+
+```bash
+# Run the interactive offline CLI anytime from terminal:
+bun run /path/to/opencode-budget-allowance/src/cli.ts
+```
+
+```text
+================================================================
+💳 OPENCODE BUDGET ALLOWANCE CLI (100% Offline - 0 LLM Tokens Burned)
+================================================================
+
+📊 Today's Spend Overview (2026-08-18):
+   • Total Cost Spent:       $6.82
+   • Total Tokens Used:      3,165,459
+   • Active Sessions Today:  2
+   • Avg Cost / Session:     $3.41
+
+Select an option:
+  1) Set Daily Budget Limit
+  2) Set Budget Cap for a Session
+  3) Disable Budget Checks for a Session
+  4) View Top-Up Audit History Log
+  5) Exit
+```
 
 ---
 
@@ -35,11 +67,11 @@ FROM session WHERE id = ?
 
 ## 🌟 Key Features
 
+* **Zero Token Burn CLI:** Use the standalone terminal CLI to view stats and manage limits offline with 0 LLM tokens burned.
 * **Default Behavior on Install:** Installs as **Unlimited (`Infinity`)** by default. No unexpected budget blocks happen unless you explicitly set caps in `opencode.json` or via `/budget-allowance`!
 * **Override Loop Fix (Prompt Bypassing):** When a limit is hit, prompts containing `budget-allowance`, `/budget`, `override`, `disable budget`, or `off` are **never blocked**, so you can seamlessly talk to opencode to adjust or disable your budget!
 * **Zero TUI Artifacts (Silent Execution):** Runs 100% silently without injecting raw `console.log()` text into terminal stdout. System context is injected cleanly via `experimental.chat.system.transform`.
 * **Explicit Error Identification:** All error blocks carry the `[OPENCODE BUDGET ALLOWANCE PLUGIN BLOCK]` prefix and cite the exact local overrides file path (`~/.config/opencode/budget-overrides.json`).
-* **Standalone Maintenance:** Versioned and maintained at [hithismani/opencode-budget-allowance](https://github.com/hithismani/opencode-budget-allowance).
 
 ---
 
@@ -65,8 +97,8 @@ Copy the plugin & command files into your global opencode config:
 ```bash
 mkdir -p ~/.config/opencode/plugins ~/.config/opencode/command
 
-cp opencode-budget-plugin/src/budget.ts ~/.config/opencode/plugins/budget.ts
-cp opencode-budget-plugin/command/budget-allowance.md ~/.config/opencode/command/budget-allowance.md
+cp /path/to/opencode-budget-allowance/src/budget.ts ~/.config/opencode/plugins/budget.ts
+cp /path/to/opencode-budget-allowance/command/budget-allowance.md ~/.config/opencode/command/budget-allowance.md
 ```
 
 Then configure `~/.config/opencode/opencode.json`:
@@ -86,10 +118,6 @@ Then configure `~/.config/opencode/opencode.json`:
   ]
 }
 ```
-
-### Option B: Project Drop-In Auto-Discovery
-
-Copy `src/budget.ts` into any project's `.opencode/plugins/` directory. Opencode automatically discovers and loads it without editing any JSON files!
 
 ---
 

@@ -42,11 +42,11 @@ export interface BudgetState {
 // PATHS & CONSTANTS
 // ============================================================================
 
-const dbPath = path.join(os.homedir(), ".local/share/opencode/opencode.db");
-const statePath = path.join(os.homedir(), ".config/opencode/budget-overrides.json");
+export const dbPath = path.join(os.homedir(), ".local/share/opencode/opencode.db");
+export const statePath = path.join(os.homedir(), ".config/opencode/budget-overrides.json");
 
 // Compact number formatter (610k, 1.2M)
-function formatK(num: number): string {
+export function formatK(num: number): string {
   if (num === Infinity || num < 0 || isNaN(num)) return "∞";
   if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`;
   if (num >= 1_000) return `${(num / 1_000).toFixed(0)}k`;
@@ -57,7 +57,7 @@ function formatK(num: number): string {
 // PERSISTENCE HELPERS
 // ============================================================================
 
-function loadState(): BudgetState {
+export function loadState(): BudgetState {
   try {
     if (fs.existsSync(statePath)) {
       const parsed = JSON.parse(fs.readFileSync(statePath, "utf-8"));
@@ -83,11 +83,20 @@ function loadState(): BudgetState {
   };
 }
 
+export function saveState(state: BudgetState): void {
+  try {
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+  } catch (err) {
+    console.error("❌ Failed to save budget state:", err);
+  }
+}
+
 // ============================================================================
 // SQLITE QUERY HELPERS
 // ============================================================================
 
-function queryDb<T>(queryFn: (db: Database) => T, fallback: T): T {
+export function queryDb<T>(queryFn: (db: Database) => T, fallback: T): T {
   if (!fs.existsSync(dbPath)) return fallback;
   let db: Database | null = null;
   try {
@@ -98,6 +107,42 @@ function queryDb<T>(queryFn: (db: Database) => T, fallback: T): T {
   } finally {
     if (db) db.close();
   }
+}
+
+export function getOverviewMetrics() {
+  return queryDb(
+    (db) => {
+      const startOfDayMs = new Date().setHours(0, 0, 0, 0);
+
+      const dailyRow = db.query(`
+        SELECT 
+          COALESCE(SUM(cost), 0) AS dailyCost,
+          COALESCE(SUM(tokens_input + tokens_output), 0) AS dailyTokens,
+          COUNT(id) AS sessionCount,
+          COALESCE(AVG(cost), 0) AS avgCost
+        FROM session WHERE time_created >= ?
+      `).get(startOfDayMs) as {
+        dailyCost: number;
+        dailyTokens: number;
+        sessionCount: number;
+        avgCost: number;
+      };
+
+      const recentSessions = db.query(`
+        SELECT id, title, cost, tokens_input + tokens_output AS totalTokens, time_updated 
+        FROM session ORDER BY time_updated DESC LIMIT 10
+      `).all() as Array<{ id: string; title: string; cost: number; totalTokens: number; time_updated: number }>;
+
+      return {
+        dailyCost: dailyRow?.dailyCost ?? 0,
+        dailyTokens: dailyRow?.dailyTokens ?? 0,
+        sessionCount: dailyRow?.sessionCount ?? 0,
+        avgCost: dailyRow?.avgCost ?? 0,
+        sessions: recentSessions,
+      };
+    },
+    { dailyCost: 0, dailyTokens: 0, sessionCount: 0, avgCost: 0, sessions: [] }
+  );
 }
 
 // ============================================================================
@@ -295,7 +340,7 @@ export default (async ({ client }, options: BudgetOptions = {}) => {
       if (baseSessionTokenCap !== Infinity && dbMetrics.sessionTotalTokens >= baseSessionTokenCap) {
         throw new Error(
           `\n🚨 [OPENCODE BUDGET ALLOWANCE PLUGIN BLOCK]\n` +
-          `Session token limit reached for ${modelName} (${formatK(dbMetrics.sessionTotalTokens)} / Limit ${formatK(baseSessionSessionTokenCap ?? baseSessionTokenCap)}).\n\n` +
+          `Session token limit reached for ${modelName} (${formatK(dbMetrics.sessionTotalTokens)} / Limit ${formatK(baseSessionTokenCap)}).\n\n` +
           `State Overrides File: ${statePath}\n\n` +
           `To fix or continue talking, run:\n` +
           `  /budget-allowance 500k  (Set session token limit to 500,000)\n` +
