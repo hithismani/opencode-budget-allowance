@@ -214,6 +214,124 @@ export function findMatchingLimit(
 }
 
 // ============================================================================
+// BUDGET LIMIT CHECKER
+// ============================================================================
+
+export function checkBudgetExceeded(
+  sessionId: string,
+  modelName: string,
+  providerId: string,
+  modelId: string,
+  fullModelKey: string,
+  options: BudgetOptions
+): string | null {
+  const state = loadState();
+  if (state.globalDisabled === true) return null;
+  if (sessionId && state.disabledSessions[sessionId] === true) return null;
+
+  const todayStr = new Date().toISOString().split("T")[0];
+  const {
+    defaultDailyLimitUSD = Infinity,
+    defaultSessionLimitUSD = Infinity,
+    defaultDailyTokenLimit = Infinity,
+    defaultSessionTokenLimit = Infinity,
+    modelCostBudgets = {},
+    modelTokenBudgets = {},
+    providerCostBudgets = {},
+    providerTokenBudgets = {},
+    providerModelCostBudgets = {},
+    providerModelTokenBudgets = {},
+  } = options;
+
+  const providerNestedCost = providerId && providerModelCostBudgets[providerId]
+    ? findMatchingLimit(providerModelCostBudgets[providerId], [modelId, fullModelKey])
+    : undefined;
+
+  const baseSessionCostCap =
+    (sessionId ? state.sessionCostLimits[sessionId]?.limit : undefined) ??
+    providerNestedCost ??
+    findMatchingLimit(modelCostBudgets, [fullModelKey, modelId]) ??
+    findMatchingLimit(providerCostBudgets, [providerId]) ??
+    defaultSessionLimitUSD;
+
+  const providerNestedToken = providerId && providerModelTokenBudgets[providerId]
+    ? findMatchingLimit(providerModelTokenBudgets[providerId], [modelId, fullModelKey])
+    : undefined;
+
+  const baseSessionTokenCap =
+    (sessionId ? state.sessionTokenLimits[sessionId]?.limit : undefined) ??
+    providerNestedToken ??
+    findMatchingLimit(modelTokenBudgets, [fullModelKey, modelId]) ??
+    findMatchingLimit(providerTokenBudgets, [providerId]) ??
+    defaultSessionTokenLimit;
+
+  const effectiveDailyCostLimit =
+    defaultDailyLimitUSD === Infinity
+      ? Infinity
+      : defaultDailyLimitUSD + (state.dailyTopUpUSD[todayStr] || 0);
+
+  const effectiveDailyTokenLimit =
+    defaultDailyTokenLimit === Infinity
+      ? Infinity
+      : defaultDailyTokenLimit + (state.dailyTopUpTokens[todayStr] || 0);
+
+  if (
+    baseSessionCostCap === Infinity &&
+    baseSessionTokenCap === Infinity &&
+    effectiveDailyCostLimit === Infinity &&
+    effectiveDailyTokenLimit === Infinity
+  ) {
+    return null;
+  }
+
+  const startOfDayMs = new Date().setHours(0, 0, 0, 0);
+  const dbMetrics = queryDb(
+    (db) => {
+      const dailyRow = db.query(`
+        SELECT 
+          COALESCE(SUM(cost), 0) AS dailyCost,
+          COALESCE(SUM(tokens_input + tokens_output), 0) AS dailyTokens
+        FROM session WHERE time_created >= ?
+      `).get(startOfDayMs) as { dailyCost: number; dailyTokens: number } | null;
+
+      let sessionCost = 0;
+      let sessionTotalTokens = 0;
+
+      if (sessionId) {
+        const sessionRow = db.query(`
+          SELECT cost, tokens_input, tokens_output FROM session WHERE id = ?
+        `).get(sessionId) as { cost: number; tokens_input: number; tokens_output: number } | null;
+        sessionCost = sessionRow?.cost ?? 0;
+        sessionTotalTokens = (sessionRow?.tokens_input ?? 0) + (sessionRow?.tokens_output ?? 0);
+      }
+
+      return {
+        dailyCost: dailyRow?.dailyCost ?? 0,
+        dailyTokens: dailyRow?.dailyTokens ?? 0,
+        sessionCost,
+        sessionTotalTokens,
+      };
+    },
+    { dailyCost: 0, dailyTokens: 0, sessionCost: 0, sessionTotalTokens: 0 }
+  );
+
+  if (effectiveDailyCostLimit !== Infinity && dbMetrics.dailyCost >= effectiveDailyCostLimit) {
+    return `Daily spend limit reached ($${dbMetrics.dailyCost.toFixed(2)} / Cap $${effectiveDailyCostLimit.toFixed(2)})`;
+  }
+  if (effectiveDailyTokenLimit !== Infinity && dbMetrics.dailyTokens >= effectiveDailyTokenLimit) {
+    return `Daily token ceiling reached (${formatK(dbMetrics.dailyTokens)} / Ceiling ${formatK(effectiveDailyTokenLimit)})`;
+  }
+  if (sessionId && baseSessionCostCap !== Infinity && dbMetrics.sessionCost >= baseSessionCostCap) {
+    return `Session cost limit reached for ${modelName || "active model"} ($${dbMetrics.sessionCost.toFixed(2)} / Limit $${baseSessionCostCap.toFixed(2)})`;
+  }
+  if (sessionId && baseSessionTokenCap !== Infinity && dbMetrics.sessionTotalTokens >= baseSessionTokenCap) {
+    return `Session token limit reached for ${modelName || "active model"} (${formatK(dbMetrics.sessionTotalTokens)} / Limit ${formatK(baseSessionTokenCap)})`;
+  }
+
+  return null;
+}
+
+// ============================================================================
 // PLUGIN MAIN EXPORT
 // ============================================================================
 
@@ -221,24 +339,50 @@ export default {
   id: "opencode-budget-allowance",
   server: (async ({ client }: any, options: BudgetOptions = {}) => {
     const {
-      defaultDailyLimitUSD = Infinity,
-      defaultSessionLimitUSD = Infinity,
-      defaultDailyTokenLimit = Infinity,
-      defaultSessionTokenLimit = Infinity,
       compactAtInputTokens = 120_000,
-      modelCostBudgets = {},
-      modelTokenBudgets = {},
-      providerCostBudgets = {},
-      providerTokenBudgets = {},
-      providerModelCostBudgets = {},
-      providerModelTokenBudgets = {},
     } = options;
+
+    // Track sessions currently managing budget so we never block them
+    const managingSessions = new Set<string>();
 
     return {
       "shell.env": async (input: any, output: any) => {
         if (input?.sessionID) {
           output.env = output.env || {};
           output.env.OPENCODE_SESSION_ID = input.sessionID;
+        }
+      },
+
+      "command.execute.before": async (input: any) => {
+        if (input?.command?.includes("budget") || input?.command?.includes("allocate")) {
+          if (input?.sessionID) {
+            managingSessions.add(input.sessionID);
+          }
+        }
+      },
+
+      "chat.message": async (input: any, output: any) => {
+        const sessionId = input?.sessionID || "";
+        const parts = output?.parts || [];
+        const text = parts
+          .filter((p: any) => p?.type === "text" && typeof p?.text === "string")
+          .map((p: any) => p.text)
+          .join(" ")
+          .toLowerCase();
+
+        if (
+          text.includes("budget") ||
+          text.includes("allowance") ||
+          text.includes("allocate") ||
+          text.includes("override") ||
+          text.includes("disable budget") ||
+          text.includes("turn off budget") ||
+          text.includes("off global") ||
+          text.includes("/budget")
+        ) {
+          if (sessionId) managingSessions.add(sessionId);
+        } else {
+          if (sessionId) managingSessions.delete(sessionId);
         }
       },
 
@@ -253,10 +397,44 @@ export default {
         const sessionTokenLimit = state.sessionTokenLimits[sessionId]?.limit;
 
         output.system = output.system || [];
+
         if (state.globalDisabled === true) {
           output.system.push("[Budget Status: ALL budget limits and checks are GLOBALLY DISABLED]");
-        } else if (isSessionDisabled) {
+          return;
+        }
+
+        if (isSessionDisabled) {
           output.system.push("[Budget Status: Session budget checks are DISABLED for this session]");
+          return;
+        }
+
+        const { providerId, modelId, fullModelKey, displayName } = resolveModelAndProvider(
+          input?.model,
+          undefined
+        );
+
+        const blockReason = checkBudgetExceeded(
+          sessionId,
+          displayName,
+          providerId,
+          modelId,
+          fullModelKey,
+          options
+        );
+
+        if (blockReason) {
+          output.system.push(
+            `🚨 [BUDGET LIMIT REACHED: ${blockReason}]\n` +
+            `The user has reached their budget cap. You MUST inform them politely about the active spend and budget cap.\n` +
+            `You MUST decline performing code generation, file editing, or project tasks until the budget is adjusted.\n` +
+            `Inform the user they can:\n` +
+            `  • Increase session limit: e.g. /budget 25 or /budget 1m\n` +
+            `  • Disable limit for this session: /budget off\n` +
+            `  • Disable all limits globally: /budget off global\n` +
+            `  • Add daily allowance: /budget daily 25\n` +
+            `  • Or use the offline terminal CLI: bun run ~/.config/opencode/plugins/cli.ts\n` +
+            `You CAN and MUST execute budget tools (budget_set_limit, budget_disable, budget_enable, budget_get_status) if the user asks you to adjust or remove their budget.`
+          );
         } else {
           const parts: string[] = [];
           if (sessionCostLimit !== undefined) {
@@ -265,17 +443,46 @@ export default {
           if (sessionTokenLimit !== undefined) {
             parts.push(`Session Token Cap: ${formatK(sessionTokenLimit)}`);
           }
-          if (defaultDailyLimitUSD !== Infinity || dailyTopUpUSD > 0) {
-            const cap = (defaultDailyLimitUSD === Infinity ? 0 : defaultDailyLimitUSD) + dailyTopUpUSD;
+          if (options.defaultDailyLimitUSD !== Infinity || dailyTopUpUSD > 0) {
+            const cap = (options.defaultDailyLimitUSD === undefined || options.defaultDailyLimitUSD === Infinity ? 0 : options.defaultDailyLimitUSD) + dailyTopUpUSD;
             parts.push(`Daily Cost Cap: $${cap.toFixed(2)}`);
           }
-          if (defaultDailyTokenLimit !== Infinity || dailyTopUpTokens > 0) {
-            const cap = (defaultDailyTokenLimit === Infinity ? 0 : defaultDailyTokenLimit) + dailyTopUpTokens;
+          if (options.defaultDailyTokenLimit !== Infinity || dailyTopUpTokens > 0) {
+            const cap = (options.defaultDailyTokenLimit === undefined || options.defaultDailyTokenLimit === Infinity ? 0 : options.defaultDailyTokenLimit) + dailyTopUpTokens;
             parts.push(`Daily Token Cap: ${formatK(cap)}`);
           }
           if (parts.length > 0) {
             output.system.push(`[Budget Allowance: ${parts.join(" | ")}]`);
           }
+        }
+      },
+
+      // Intercept modifying tools if budget is exceeded
+      "tool.execute.before": async (input: any) => {
+        // Never block budget management tools
+        if (input?.tool?.startsWith("budget_")) {
+          return;
+        }
+
+        const sessionId = input?.sessionID || "";
+        const state = loadState();
+        if (state.globalDisabled === true) return;
+        if (sessionId && state.disabledSessions[sessionId] === true) return;
+
+        const blockReason = checkBudgetExceeded(
+          sessionId,
+          "active model",
+          "",
+          "",
+          "",
+          options
+        );
+
+        if (blockReason) {
+          throw new Error(
+            `[Budget Exceeded] Execution of tool '${input.tool}' is blocked because ${blockReason}.\n` +
+            `To continue, adjust your budget with /budget <amount>, /budget off, or /budget off global.`
+          );
         }
       },
 
@@ -497,197 +704,21 @@ export default {
 
       "chat.params": async (params: any) => {
         const sessionId = params.sessionID || (params as any).sessionId || "";
-        const rawModel = params.model;
-        const providerInfo = (params as any).provider;
-        const todayStr = new Date().toISOString().split("T")[0];
 
-        // Bypass budget blocking if user's prompt is managing or overriding budget!
-        const userMessageText = (params.message as any)?.content || (params.message as any)?.text || "";
-        const textLower = typeof userMessageText === "string" ? userMessageText.toLowerCase() : "";
-        const isCommandOrOverridePrompt =
-          textLower.includes("budget") ||
-          textLower.includes("allowance") ||
-          textLower.includes("allocate") ||
-          textLower.includes("override") ||
-          textLower.includes("disable budget") ||
-          textLower.includes("turn off budget");
-
-        if (isCommandOrOverridePrompt) {
-          return;
-        }
-
-        const state = loadState();
-
-        // Check if globally disabled
-        if (state.globalDisabled === true) {
-          return;
-        }
-
-        // Check if session disabled
-        if (state.disabledSessions[sessionId] === true) {
-          return;
-        }
-
-        const { providerId, modelId, fullModelKey, displayName } = resolveModelAndProvider(
-          rawModel,
-          providerInfo
-        );
-
-        // Resolve Provider-Specific Model Cost Cap:
-        // 1. providerModelCostBudgets[providerId][modelId]
-        // 2. modelCostBudgets["provider/model"]
-        // 3. modelCostBudgets["model"]
-        // 4. providerCostBudgets["provider"]
-        // 5. defaultSessionLimitUSD
-        const providerNestedCost = providerId && providerModelCostBudgets[providerId]
-          ? findMatchingLimit(providerModelCostBudgets[providerId], [modelId, fullModelKey])
-          : undefined;
-
-        const baseSessionCostCap =
-          state.sessionCostLimits[sessionId]?.limit ??
-          providerNestedCost ??
-          findMatchingLimit(modelCostBudgets, [fullModelKey, modelId]) ??
-          findMatchingLimit(providerCostBudgets, [providerId]) ??
-          defaultSessionLimitUSD;
-
-        // Resolve Provider-Specific Model Token Cap:
-        const providerNestedToken = providerId && providerModelTokenBudgets[providerId]
-          ? findMatchingLimit(providerModelTokenBudgets[providerId], [modelId, fullModelKey])
-          : undefined;
-
-        const baseSessionTokenCap =
-          state.sessionTokenLimits[sessionId]?.limit ??
-          providerNestedToken ??
-          findMatchingLimit(modelTokenBudgets, [fullModelKey, modelId]) ??
-          findMatchingLimit(providerTokenBudgets, [providerId]) ??
-          defaultSessionTokenLimit;
-
-        const effectiveDailyCostLimit =
-          defaultDailyLimitUSD === Infinity
-            ? Infinity
-            : defaultDailyLimitUSD + (state.dailyTopUpUSD[todayStr] || 0);
-
-        const effectiveDailyTokenLimit =
-          defaultDailyTokenLimit === Infinity
-            ? Infinity
-            : defaultDailyTokenLimit + (state.dailyTopUpTokens[todayStr] || 0);
-
-        // If no caps are active anywhere, return immediately
-        if (
-          baseSessionCostCap === Infinity &&
-          baseSessionTokenCap === Infinity &&
-          effectiveDailyCostLimit === Infinity &&
-          effectiveDailyTokenLimit === Infinity
-        ) {
-          return;
-        }
-
-        // =======================================================================
-        // QUERY METRICS FROM SQLITE
-        // =======================================================================
-        const startOfDayMs = new Date().setHours(0, 0, 0, 0);
-
-        const dbMetrics = queryDb(
-          (db) => {
-            const dailyRow = db.query(`
-              SELECT 
-                COALESCE(SUM(cost), 0) AS dailyCost,
-                COALESCE(SUM(tokens_input + tokens_output), 0) AS dailyTokens
-              FROM session WHERE time_created >= ?
-            `).get(startOfDayMs) as {
-              dailyCost: number;
-              dailyTokens: number;
-            };
-
-            const sessionRow = db.query(`
-              SELECT cost, tokens_input, tokens_output FROM session WHERE id = ?
-            `).get(sessionId) as { cost: number; tokens_input: number; tokens_output: number } | null;
-
-            return {
-              dailyCost: dailyRow?.dailyCost ?? 0,
-              dailyTokens: dailyRow?.dailyTokens ?? 0,
-              sessionCost: sessionRow?.cost ?? 0,
-              sessionInputTokens: sessionRow?.tokens_input ?? 0,
-              sessionTotalTokens: (sessionRow?.tokens_input ?? 0) + (sessionRow?.tokens_output ?? 0),
-            };
-          },
-          {
-            dailyCost: 0,
-            dailyTokens: 0,
-            sessionCost: 0,
-            sessionInputTokens: 0,
-            sessionTotalTokens: 0,
-          }
-        );
-
-        const cliCmd = `bun run ${cliPath}`;
-
-        // =======================================================================
-        // CHECK 1: DAILY COST CEILING
-        // =======================================================================
-        if (effectiveDailyCostLimit !== Infinity && dbMetrics.dailyCost >= effectiveDailyCostLimit) {
-          throw new Error(
-            `\n🚨 [OPENCODE BUDGET ALLOWANCE PLUGIN BLOCK]\n` +
-            `Daily spend limit reached ($${dbMetrics.dailyCost.toFixed(2)} / Cap $${effectiveDailyCostLimit.toFixed(2)}).\n\n` +
-            `State Overrides File: ${statePath}\n\n` +
-            `To fix or continue talking:\n` +
-            `  1. Run slash command: /budget daily 25 (or /budget off global)\n` +
-            `  2. OR run offline CLI tool: ${cliCmd}\n`
+        // Auto-compaction if input tokens exceed threshold
+        if (compactAtInputTokens !== Infinity) {
+          const sessionRow = queryDb(
+            (db) => db.query(`SELECT tokens_input FROM session WHERE id = ?`).get(sessionId) as { tokens_input: number } | null,
+            null
           );
-        }
-
-        // =======================================================================
-        // CHECK 2: DAILY TOKEN CEILING
-        // =======================================================================
-        if (effectiveDailyTokenLimit !== Infinity && dbMetrics.dailyTokens >= effectiveDailyTokenLimit) {
-          throw new Error(
-            `\n🚨 [OPENCODE BUDGET ALLOWANCE PLUGIN BLOCK]\n` +
-            `Daily token ceiling reached (${formatK(dbMetrics.dailyTokens)} / Ceiling ${formatK(effectiveDailyTokenLimit)}).\n\n` +
-            `State Overrides File: ${statePath}\n\n` +
-            `To fix or continue talking:\n` +
-            `  1. Run slash command: /budget 2m (or /budget off global)\n` +
-            `  2. OR run offline CLI tool: ${cliCmd}\n`
-          );
-        }
-
-        // =======================================================================
-        // CHECK 3: SESSION COST CEILING
-        // =======================================================================
-        if (baseSessionCostCap !== Infinity && dbMetrics.sessionCost >= baseSessionCostCap) {
-          throw new Error(
-            `\n🚨 [OPENCODE BUDGET ALLOWANCE PLUGIN BLOCK]\n` +
-            `Session budget limit reached for ${displayName} ($${dbMetrics.sessionCost.toFixed(2)} / Limit $${baseSessionCostCap.toFixed(2)}).\n\n` +
-            `State Overrides File: ${statePath}\n\n` +
-            `To fix or continue talking:\n` +
-            `  1. Run slash command: /budget 15 (or /budget off)\n` +
-            `  2. OR run offline CLI tool: ${cliCmd}\n`
-          );
-        }
-
-        // =======================================================================
-        // CHECK 4: SESSION TOKEN CEILING
-        // =======================================================================
-        if (baseSessionTokenCap !== Infinity && dbMetrics.sessionTotalTokens >= baseSessionTokenCap) {
-          throw new Error(
-            `\n🚨 [OPENCODE BUDGET ALLOWANCE PLUGIN BLOCK]\n` +
-            `Session token limit reached for ${displayName} (${formatK(dbMetrics.sessionTotalTokens)} / Limit ${formatK(baseSessionTokenCap)}).\n\n` +
-            `State Overrides File: ${statePath}\n\n` +
-            `To fix or continue talking:\n` +
-            `  1. Run slash command: /budget 500k (or /budget off)\n` +
-            `  2. OR run offline CLI tool: ${cliCmd}\n`
-          );
-        }
-
-        // =======================================================================
-        // AUTO-COMPACTION
-        // =======================================================================
-        if (dbMetrics.sessionInputTokens >= compactAtInputTokens) {
-          try {
-            if (client?.session?.compact) {
-              await client.session.compact({ path: { id: sessionId } });
+          if (sessionRow && sessionRow.tokens_input >= compactAtInputTokens) {
+            try {
+              if (client?.session?.compact) {
+                await client.session.compact({ path: { id: sessionId } });
+              }
+            } catch {
+              // Silent fallback
             }
-          } catch {
-            // Silent fallback
           }
         }
       },
