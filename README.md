@@ -7,6 +7,24 @@ Standalone session, daily, project, and provider budget allowance plugin & **100
 
 ---
 
+## 🚀 1-Command Automated Installation
+
+Run this single command in your terminal to automatically install the plugin, slash command, and auto-patch your global `~/.config/opencode/opencode.json`:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/hithismani/opencode-budget-allowance/main/install.sh | bash
+```
+
+Or clone the repo and run:
+
+```bash
+git clone https://github.com/hithismani/opencode-budget-allowance.git
+cd opencode-budget-allowance
+./install.sh
+```
+
+---
+
 ## ❌ The Problem
 
 1. **Runaway LLM API Bills:** Working with high-capacity models (Claude 3.5 Opus, GPT-4o, FABLE 5) in multi-turn agent loops can quietly consume tens or hundreds of dollars in API credits within a single session.
@@ -55,15 +73,10 @@ Set custom allowance caps per LLM provider (e.g. higher caps for Anthropic, lowe
 }
 ```
 
-### 3. Model-Specific Allowances
-Set custom allowance caps per model ID or keyword (e.g. `fable-5`, `claude-3-opus`):
-
-```json
-"modelCostBudgets": {
-  "fable-5": 10.00,
-  "claude-3-opus": 15.00
-}
-```
+### 3. Multi-Provider Model Allocation
+If a model exists across multiple providers (e.g. `claude-3-5-sonnet` on Anthropic vs Google Vertex):
+* **`modelCostBudgets`** matches the model name (`claude-3-5-sonnet`) and caps total session spend regardless of provider.
+* **`providerCostBudgets`** matches the active provider (`anthropic` vs `google-vertex`). Opencode records `providerID` for every turn in SQLite, so switching providers allocates cost accurately to that provider's cap!
 
 ---
 
@@ -111,46 +124,22 @@ Select an option:
 
 ---
 
-## 🚀 Installation & Setup
+## 🏛️ How Costing & Token Tracking Works (Native Opencode SQLite Engine)
 
-### Option A: Global Setup (All Projects)
+Opencode **natively calculates exact token counts and $ USD costs on every turn** and records them directly into its native SQLite database:
 
-Copy the plugin & command files into your global opencode config:
+📍 **Database Path:** `~/.local/share/opencode/opencode.db`  
+📊 **Table:** `session`
 
-```bash
-mkdir -p ~/.config/opencode/plugins ~/.config/opencode/command
-
-cp /path/to/opencode-budget-allowance/src/budget.ts ~/.config/opencode/plugins/budget.ts
-cp /path/to/opencode-budget-allowance/command/budget-allowance.md ~/.config/opencode/command/budget-allowance.md
+```sql
+SELECT 
+  cost,                -- Native $ USD cost calculated per turn by Opencode
+  tokens_input,        -- Input prompt tokens
+  tokens_output,       -- Generated output tokens
+  tokens_cache_read,   -- Prompt cache hits
+  tokens_cache_write   -- Prompt cache writes
+FROM session WHERE id = ?
 ```
-
-Then configure `~/.config/opencode/opencode.json` (or `~/.config/opencode/opencode.jsonc`):
-
-> ⚠️ **Important:** Use the **absolute path** to `plugins/budget.ts` in global config files so path resolution works regardless of which project folder you run opencode from!
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    ["/home/YOUR_USERNAME/.config/opencode/plugins/budget.ts", {
-      "defaultDailyLimitUSD": 20.00,
-      "compactAtInputTokens": 100000,
-      "providerCostBudgets": {
-        "anthropic": 20.00,
-        "google-vertex": 5.00
-      },
-      "modelCostBudgets": {
-        "fable-5": 10.00,
-        "claude-3-opus": 15.00
-      }
-    }]
-  ]
-}
-```
-
-### Option B: Project Drop-In Auto-Discovery
-
-Copy `src/budget.ts` into any project's `.opencode/plugins/` directory and `command/budget-allowance.md` into `.opencode/command/`. Opencode automatically discovers and loads files in `.opencode/plugins/` on startup without editing any JSON files!
 
 ---
 
