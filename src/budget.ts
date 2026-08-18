@@ -14,8 +14,10 @@ export interface BudgetOptions {
   defaultDailyTokenLimit?: number;     // Defaults to Infinity (Unlimited unless set)
   defaultSessionTokenLimit?: number;   // Defaults to Infinity (Unlimited unless set)
   compactAtInputTokens?: number;       // Auto-compaction input token threshold (default: 120,000)
-  modelCostBudgets?: Record<string, number>;  // Per-model default cost limits { "fable-5": 10.0 }
-  modelTokenBudgets?: Record<string, number>; // Per-model default token limits { "fable-5": 200000 }
+  modelCostBudgets?: Record<string, number>;     // Per-model cost limits { "fable-5": 10.0 }
+  modelTokenBudgets?: Record<string, number>;    // Per-model token limits { "fable-5": 200000 }
+  providerCostBudgets?: Record<string, number>;  // Per-provider cost limits { "anthropic": 20.0, "google-vertex": 5.0 }
+  providerTokenBudgets?: Record<string, number>; // Per-provider token limits { "anthropic": 500000 }
 }
 
 export interface TopUpRecord {
@@ -158,10 +160,12 @@ export default (async ({ client }, options: BudgetOptions = {}) => {
     compactAtInputTokens = 120_000,
     modelCostBudgets = {},
     modelTokenBudgets = {},
+    providerCostBudgets = {},
+    providerTokenBudgets = {},
   } = options;
 
   return {
-    // Clean System Context Awareness (Zero TUI Console Clutter + 90% Toast Warning)
+    // Clean System Context Awareness
     "experimental.chat.system.transform": async (input, output) => {
       const sessionId = input.sessionID || "";
       const modelName = input.model?.id || "Active Model";
@@ -186,11 +190,10 @@ export default (async ({ client }, options: BudgetOptions = {}) => {
           ? Infinity
           : defaultDailyLimitUSD + (state.dailyTopUpUSD[todayStr] || 0);
 
-      // Check metrics for 90% threshold toast warning
       const dbMetrics = getOverviewMetrics();
       const sessionRow = queryDb((db) => {
-        return db.query(`SELECT cost, tokens_input + tokens_output as totalTokens FROM session WHERE id = ?`).get(sessionId) as { cost: number; totalTokens: number } | null;
-      }, { cost: 0, totalTokens: 0 });
+        return db.query(`SELECT cost FROM session WHERE id = ?`).get(sessionId) as { cost: number } | null;
+      }, { cost: 0 });
 
       const currentSessionCost = sessionRow?.cost ?? 0;
 
@@ -219,6 +222,8 @@ export default (async ({ client }, options: BudgetOptions = {}) => {
       const sessionId = params.sessionID || (params as any).sessionId || "";
       const rawModel = params.model;
       const modelName = typeof rawModel === "string" ? rawModel : (rawModel as any)?.id || "Active Model";
+      const providerInfo = (params as any).provider;
+      const providerName = (providerInfo?.info?.id || providerInfo?.source || "").toLowerCase();
       const todayStr = new Date().toISOString().split("T")[0];
 
       // CRITICAL FIX: Bypass budget blocking if user's prompt is managing or overriding budget!
@@ -231,7 +236,6 @@ export default (async ({ client }, options: BudgetOptions = {}) => {
         userMessageText.includes("turn off budget");
 
       if (isCommandOrOverridePrompt) {
-        // Allow the user to communicate with opencode to run override commands!
         return;
       }
 
@@ -243,21 +247,35 @@ export default (async ({ client }, options: BudgetOptions = {}) => {
         return;
       }
 
-      // Determine model-specific defaults if configured
+      // Determine model-specific and provider-specific defaults
       const matchedCostKey = Object.keys(modelCostBudgets).find((k) =>
         modelName.toLowerCase().includes(k.toLowerCase())
+      );
+      const matchedProviderCostKey = Object.keys(providerCostBudgets).find((k) =>
+        providerName.includes(k.toLowerCase())
       );
       const matchedTokenKey = Object.keys(modelTokenBudgets).find((k) =>
         modelName.toLowerCase().includes(k.toLowerCase())
       );
+      const matchedProviderTokenKey = Object.keys(providerTokenBudgets).find((k) =>
+        providerName.includes(k.toLowerCase())
+      );
 
       const baseSessionCostCap =
         state.sessionCostLimits[sessionId]?.limit ??
-        (matchedCostKey ? modelCostBudgets[matchedCostKey] : defaultSessionLimitUSD);
+        (matchedCostKey
+          ? modelCostBudgets[matchedCostKey]
+          : matchedProviderCostKey
+          ? providerCostBudgets[matchedProviderCostKey]
+          : defaultSessionLimitUSD);
 
       const baseSessionTokenCap =
         state.sessionTokenLimits[sessionId]?.limit ??
-        (matchedTokenKey ? modelTokenBudgets[matchedTokenKey] : defaultSessionTokenLimit);
+        (matchedTokenKey
+          ? modelTokenBudgets[matchedTokenKey]
+          : matchedProviderTokenKey
+          ? providerTokenBudgets[matchedProviderTokenKey]
+          : defaultSessionTokenLimit);
 
       const effectiveDailyCostLimit =
         defaultDailyLimitUSD === Infinity

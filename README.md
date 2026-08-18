@@ -3,7 +3,7 @@
 [![GitHub Repository](https://img.shields.io/badge/GitHub-hithismani%2Fopencode--budget--allowance-blue)](https://github.com/hithismani/opencode-budget-allowance)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Standalone session and daily budget allowance plugin & **100% Offline Interactive CLI** for **opencode** created by [@hithismani](https://github.com/hithismani).
+Standalone session, daily, project, and provider budget allowance plugin & **100% Offline Interactive CLI** for **opencode** created by [@hithismani](https://github.com/hithismani).
 
 ---
 
@@ -25,6 +25,45 @@ Standalone session and daily budget allowance plugin & **100% Offline Interactiv
 * **Zero TUI Artifacts (Silent Execution):** Runs 100% silently in the background without stdout line wrap bugs. Active budget status is injected cleanly into the system prompt context array via `experimental.chat.system.transform`.
 * **Proactive 90% Toast Warnings:** Injects subtle system warnings when you cross 90% of an active budget so you're never caught off guard.
 * **100% Offline Terminal CLI:** Includes an offline CLI tool (`bun run src/cli.ts`) that lets you view spend, lock caps, or update the plugin with 0 LLM tokens burned.
+
+---
+
+## 🎯 Flexible Allowance Scopes (Project, Provider, Model, & Daily)
+
+### 1. Project-Specific Allowances
+Because opencode deep-merges project config over global config, you can place an `opencode.json` inside any project directory to set custom project allowances:
+
+```json
+{
+  "plugin": [
+    ["/abs/path/to/opencode-budget-allowance/src/budget.ts", {
+      "defaultDailyLimitUSD": 15.00,
+      "defaultSessionLimitUSD": 5.00
+    }]
+  ]
+}
+```
+
+### 2. Provider-Specific Allowances
+Set custom allowance caps per LLM provider (e.g. higher caps for Anthropic, lower for Google Vertex):
+
+```json
+"providerCostBudgets": {
+  "anthropic": 20.00,
+  "google-vertex": 5.00,
+  "openai": 10.00
+}
+```
+
+### 3. Model-Specific Allowances
+Set custom allowance caps per model ID or keyword (e.g. `fable-5`, `claude-3-opus`):
+
+```json
+"modelCostBudgets": {
+  "fable-5": 10.00,
+  "claude-3-opus": 15.00
+}
+```
 
 ---
 
@@ -72,25 +111,6 @@ Select an option:
 
 ---
 
-## 🏛️ How Costing & Token Tracking Works (Native Opencode SQLite Engine)
-
-Opencode **natively calculates exact token counts and $ USD costs on every turn** and records them directly into its native SQLite database:
-
-📍 **Database Path:** `~/.local/share/opencode/opencode.db`  
-📊 **Table:** `session`
-
-```sql
-SELECT 
-  cost,                -- Native $ USD cost calculated per turn by Opencode
-  tokens_input,        -- Input prompt tokens
-  tokens_output,       -- Generated output tokens
-  tokens_cache_read,   -- Prompt cache hits
-  tokens_cache_write   -- Prompt cache writes
-FROM session WHERE id = ?
-```
-
----
-
 ## 🚀 Installation & Setup
 
 ### Option A: Global Setup (All Projects)
@@ -104,15 +124,21 @@ cp /path/to/opencode-budget-allowance/src/budget.ts ~/.config/opencode/plugins/b
 cp /path/to/opencode-budget-allowance/command/budget-allowance.md ~/.config/opencode/command/budget-allowance.md
 ```
 
-Then configure `~/.config/opencode/opencode.json`:
+Then configure `~/.config/opencode/opencode.json` (or `~/.config/opencode/opencode.jsonc`):
+
+> ⚠️ **Important:** Use the **absolute path** to `plugins/budget.ts` in global config files so path resolution works regardless of which project folder you run opencode from!
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    ["./plugins/budget.ts", {
+    ["/home/YOUR_USERNAME/.config/opencode/plugins/budget.ts", {
       "defaultDailyLimitUSD": 20.00,
       "compactAtInputTokens": 100000,
+      "providerCostBudgets": {
+        "anthropic": 20.00,
+        "google-vertex": 5.00
+      },
       "modelCostBudgets": {
         "fable-5": 10.00,
         "claude-3-opus": 15.00
@@ -121,6 +147,10 @@ Then configure `~/.config/opencode/opencode.json`:
   ]
 }
 ```
+
+### Option B: Project Drop-In Auto-Discovery
+
+Copy `src/budget.ts` into any project's `.opencode/plugins/` directory and `command/budget-allowance.md` into `.opencode/command/`. Opencode automatically discovers and loads files in `.opencode/plugins/` on startup without editing any JSON files!
 
 ---
 
