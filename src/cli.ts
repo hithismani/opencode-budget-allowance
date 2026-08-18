@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import readline from "readline";
 import { execSync } from "child_process";
 import path from "path";
 import os from "os";
@@ -8,14 +7,139 @@ import fs from "fs";
 import { loadState, saveState, getOverviewMetrics } from "./budget.ts";
 
 // ============================================================================
-// READLINE PROMPT HELPER
+// TERMINAL INPUT HELPERS
+//
+// The opencode TUI leaves SGR mouse reporting (ESC [ < b ; x ; y M/m) enabled
+// on the pty it spawns CLIs in. Without stripping those sequences, every mouse
+// move echoes into the prompt as raw garbage (e.g. "35;35;18M35;36;18M..."),
+// flooding the menu input line. So we (1) turn mouse reporting and bracketed
+// paste off while the CLI runs, and (2) filter any escape sequences that still
+// arrive on stdin before they reach the prompt.
 // ============================================================================
 
-function ask(rl: readline.Interface, questionText: string): Promise<string> {
-  return new Promise((resolve) => {
-    rl.question(questionText, (ans) => {
-      resolve(ans.trim());
+const DISABLE_MOUSE = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l";
+const ENABLE_MOUSE = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?2004h";
+
+// Raw stdin chunks, still containing escape sequences, waiting to be parsed.
+let rawQueue = "";
+// Cleaned text (escape sequences removed) that arrived but wasn't asked for yet.
+let textQueue = "";
+
+// Strip CSI escape sequences (arrows, function keys, SGR mouse events, ...)
+// from raw stdin data, keeping sequences split across chunks intact.
+function cleanInput(raw: string): string {
+  rawQueue += raw;
+  let out = "";
+  while (rawQueue.length > 0) {
+    const esc = rawQueue.indexOf("\x1b");
+    if (esc === -1) {
+      out += rawQueue;
+      rawQueue = "";
+      break;
+    }
+    if (esc > 0) {
+      out += rawQueue.slice(0, esc);
+      rawQueue = rawQueue.slice(esc);
+      continue;
+    }
+    const complete = rawQueue.match(/^\x1b\[[0-9;?<]*[A-Za-z~]/);
+    if (complete) {
+      rawQueue = rawQueue.slice(complete[0].length);
+      continue;
+    }
+    // OSC sequences (ESC ] ... BEL or ESC \), e.g. terminal title changes.
+    const osc = rawQueue.match(/^\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/);
+    if (osc) {
+      rawQueue = rawQueue.slice(osc[0].length);
+      continue;
+    }
+    // Prefix of a sequence that may finish in the next chunk — hold it.
+    if (/^\x1b\[[0-9;?<]*$/.test(rawQueue) && rawQueue.length < 64) {
+      break;
+    }
+    // Lone ESC or malformed garbage — drop one byte so it can never echo.
+    rawQueue = rawQueue.slice(1);
+  }
+  return out;
+}
+
+// Ask for one line of input. Returns once a newline (or Ctrl+D) is seen.
+function ask(prompt: string): Promise<string> {
+  process.stdout.write(prompt);
+
+  if (!process.stdin.isTTY) {
+    // Piped input: lines may already be buffered from an earlier prompt.
+    return new Promise((resolve) => {
+      const flush = () => {
+        const nl = textQueue.indexOf("\n");
+        if (nl === -1) return false;
+        const line = textQueue.slice(0, nl);
+        textQueue = textQueue.slice(nl + 1);
+        resolve(line.trim());
+        return true;
+      };
+      if (flush()) {
+        process.stdin.pause();
+        return;
+      }
+      const onData = (chunk: string) => {
+        textQueue += cleanInput(chunk);
+        if (flush()) {
+          process.stdin.removeListener("data", onData);
+          process.stdin.pause();
+        }
+      };
+      process.stdin.on("data", onData);
+      process.stdin.resume();
     });
+  }
+
+  return new Promise((resolve) => {
+    const wasRaw = (process.stdin as any).isRaw || false;
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+
+    let line = "";
+    let done = false;
+
+    const finish = (value: string) => {
+      if (done) return;
+      done = true;
+      process.stdin.removeListener("data", onData);
+      process.stdin.setRawMode(wasRaw);
+      process.stdin.pause();
+      process.stdout.write("\r\n");
+      resolve(value);
+    };
+
+    const onData = (chunk: string) => {
+      for (const ch of cleanInput(chunk)) {
+        if (ch === "\r" || ch === "\n" || ch === "\x04") {
+          finish(line.trim());
+          return;
+        }
+        if (ch === "\x7f" || ch === "\b") {
+          if (line.length > 0) {
+            line = Array.from(line).slice(0, -1).join("");
+            process.stdout.write("\b \b");
+          }
+          continue;
+        }
+        if (ch === "\x03") {
+          // Ctrl+C: restore the terminal and exit cleanly.
+          process.stdin.removeListener("data", onData);
+          process.stdin.setRawMode(wasRaw);
+          process.stdout.write("\r\n");
+          process.exit(130);
+        }
+        if (ch >= " " && ch !== "\x1b") {
+          line += ch;
+          process.stdout.write(ch);
+        }
+      }
+    };
+
+    process.stdin.on("data", onData);
   });
 }
 
@@ -24,10 +148,7 @@ function ask(rl: readline.Interface, questionText: string): Promise<string> {
 // ============================================================================
 
 async function main() {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
+  if (process.stdout.isTTY) process.stdout.write(DISABLE_MOUSE);
 
   const state = loadState();
   const metrics = getOverviewMetrics();
@@ -52,10 +173,10 @@ async function main() {
   console.log(`  \x1b[36m5)\x1b[0m Update Plugin & Commands (git pull & sync)`);
   console.log(`  \x1b[36m6)\x1b[0m Exit\n`);
 
-  const choice = await ask(rl, `\x1b[1mEnter choice [1-6]: \x1b[0m`);
+  const choice = await ask(`\x1b[1mEnter choice [1-6]: \x1b[0m`);
 
   if (choice === "1") {
-    const amountStr = await ask(rl, `Enter extra daily dollar top-up (e.g. 10.00): $`);
+    const amountStr = await ask(`Enter extra daily dollar top-up (e.g. 10.00): $`);
     const amount = parseFloat(amountStr);
     if (!isNaN(amount) && amount > 0) {
       state.dailyTopUpUSD[todayStr] = (state.dailyTopUpUSD[todayStr] || 0) + amount;
@@ -83,12 +204,12 @@ async function main() {
         console.log(`  \x1b[36m${idx + 1})\x1b[0m [${s.id}] ${s.title || "Untitled"} ($${s.cost.toFixed(2)})`);
       });
 
-      const idxStr = await ask(rl, `\nSelect session number [1-${metrics.sessions.length}]: `);
+      const idxStr = await ask(`\nSelect session number [1-${metrics.sessions.length}]: `);
       const idx = parseInt(idxStr, 10) - 1;
 
       if (idx >= 0 && idx < metrics.sessions.length) {
         const targetSession = metrics.sessions[idx];
-        const capStr = await ask(rl, `Enter budget limit cap for "${targetSession.title || targetSession.id}": $`);
+        const capStr = await ask(`Enter budget limit cap for "${targetSession.title || targetSession.id}": $`);
         const cap = parseFloat(capStr);
 
         if (!isNaN(cap) && cap > 0) {
@@ -111,7 +232,7 @@ async function main() {
         console.log(`  \x1b[36m${idx + 1})\x1b[0m [${s.id}] ${s.title || "Untitled"} ${status}`);
       });
 
-      const idxStr = await ask(rl, `\nSelect session number to disable budget [1-${metrics.sessions.length}]: `);
+      const idxStr = await ask(`\nSelect session number to disable budget [1-${metrics.sessions.length}]: `);
       const idx = parseInt(idxStr, 10) - 1;
 
       if (idx >= 0 && idx < metrics.sessions.length) {
@@ -155,7 +276,7 @@ async function main() {
     }
   }
 
-  rl.close();
+  if (process.stdout.isTTY) process.stdout.write(ENABLE_MOUSE);
 }
 
 main().catch(console.error);
