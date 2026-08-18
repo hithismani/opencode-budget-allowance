@@ -58,14 +58,18 @@ const pluginPath = '$PLUGIN_ABS_PATH';
 const hasPlugin = content.plugin.some(p => (Array.isArray(p) ? p[0] : p) === pluginPath);
 
 if (!hasPlugin) {
-  content.plugin.push([pluginPath, {
-    compactAtInputTokens: 120000,
-    modelCostBudgets: { 'fable-5': 10.00, 'deepseek-v4': 15.00, 'kimi-k3': 20.00, 'grok-4.5': 25.00 }
-  }]);
+  content.plugin.push([pluginPath, {}]);
   fs.writeFileSync(path, JSON.stringify(content, null, 2));
   console.log('✅ Auto-patched ' + path + ' with opencode-budget-allowance plugin!');
 } else {
-  console.log('ℹ️ Plugin entry already exists in ' + path);
+  // If the plugin was previously registered with hardcoded budgets, drop them
+  // so no caps are set unless the user explicitly configures them.
+  content.plugin = content.plugin.map(p => {
+    if ((Array.isArray(p) ? p[0] : p) !== pluginPath) return p;
+    return Array.isArray(p) ? [p[0], {}] : [p, {}];
+  });
+  fs.writeFileSync(path, JSON.stringify(content, null, 2));
+  console.log('✅ Stripped default budgets from ' + path + ' (no caps unless you set them)');
 }
 "
 
