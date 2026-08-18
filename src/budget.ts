@@ -497,16 +497,30 @@ export function isBudgetTalk(text: string): boolean {
   );
 }
 
-export function budgetStopError(reason: string): Error {
-  return new Error(
+export function budgetStopText(reason: string): string {
+  return (
     `[Budget Limit Reached] ${reason}\n` +
-      `This message was not sent to the model (no tokens billed).\n` +
-      `How to proceed:\n` +
-      `  /budget daily +<amount>   raise today's cap\n` +
-      `  /budget off               disable this session\n` +
-      `  /budget off global        disable everywhere\n` +
-      `  bun run ~/.config/opencode/plugins/cli.ts`
+    `How to proceed: /budget daily +<amount>  |  /budget off  |  /budget off global\n` +
+    `Or: bun run ~/.config/opencode/plugins/cli.ts`
   );
+}
+
+async function surfaceBudgetStop(client: any, sessionId: string, reason: string): Promise<void> {
+  const message = budgetStopText(reason);
+  try {
+    await client?.tui?.showToast?.({
+      body: { title: "Budget Limit Reached", message, variant: "error", duration: 20000 },
+    });
+  } catch {
+    // TUI toast is best-effort
+  }
+  if (sessionId) {
+    try {
+      await client?.session?.abort?.({ path: { id: sessionId } });
+    } catch {
+      // abort is best-effort — toast + transcript still cite the cap
+    }
+  }
 }
 
 export function checkBudgetExceeded(
@@ -576,7 +590,12 @@ export default {
           resolved.fullModelKey,
           options
         );
-        if (hardStopReason) throw budgetStopError(hardStopReason);
+        if (hardStopReason) {
+          const notice = budgetStopText(hardStopReason);
+          output.parts = output.parts || [];
+          output.parts.push({ type: "text", text: `\n\n${notice}` });
+          await surfaceBudgetStop(client, sessionId, hardStopReason);
+        }
       },
 
       "experimental.chat.system.transform": async (input: any, output: any) => {
@@ -678,11 +697,7 @@ export default {
         );
 
         if (hardStopReason) {
-          throw new Error(
-            `[Budget Limit Reached] Tool '${input.tool}' blocked — ${hardStopReason}.\n` +
-              `  /budget daily +<amount>   /budget off   /budget off global\n` +
-              `  bun run ~/.config/opencode/plugins/cli.ts`
-          );
+          throw new Error(budgetStopText(hardStopReason));
         }
       },
 
@@ -983,7 +998,10 @@ export default {
             resolved.fullModelKey,
             options
           );
-          if (hardStopReason) throw budgetStopError(hardStopReason);
+          if (hardStopReason) {
+            await surfaceBudgetStop(client, sessionId, hardStopReason);
+            return;
+          }
         }
 
         // Auto-compaction if input tokens exceed threshold
