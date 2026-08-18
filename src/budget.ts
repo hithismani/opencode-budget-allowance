@@ -483,6 +483,32 @@ export function checkBudgetStatus(
   return { hardStopReason, warningReason };
 }
 
+export function isBudgetTalk(text: string): boolean {
+  const t = text.toLowerCase();
+  return (
+    t.includes("/budget") ||
+    t.includes("budget") ||
+    t.includes("allowance") ||
+    t.includes("allocate") ||
+    t.includes("override") ||
+    t.includes("disable budget") ||
+    t.includes("turn off budget") ||
+    t.includes("off global")
+  );
+}
+
+export function budgetStopError(reason: string): Error {
+  return new Error(
+    `[Budget Limit Reached] ${reason}\n` +
+      `This message was not sent to the model (no tokens billed).\n` +
+      `How to proceed:\n` +
+      `  /budget daily +<amount>   raise today's cap\n` +
+      `  /budget off               disable this session\n` +
+      `  /budget off global        disable everywhere\n` +
+      `  bun run ~/.config/opencode/plugins/cli.ts`
+  );
+}
+
 export function checkBudgetExceeded(
   sessionId: string,
   modelName: string,
@@ -531,23 +557,26 @@ export default {
         const text = parts
           .filter((p: any) => p?.type === "text" && typeof p?.text === "string")
           .map((p: any) => p.text)
-          .join(" ")
-          .toLowerCase();
+          .join(" ");
 
-        if (
-          text.includes("budget") ||
-          text.includes("allowance") ||
-          text.includes("allocate") ||
-          text.includes("override") ||
-          text.includes("disable budget") ||
-          text.includes("turn off budget") ||
-          text.includes("off global") ||
-          text.includes("/budget")
-        ) {
-          if (sessionId) managingSessions.add(sessionId);
-        } else {
-          if (sessionId) managingSessions.delete(sessionId);
+        const managing = isBudgetTalk(text);
+        if (sessionId) {
+          if (managing) managingSessions.add(sessionId);
+          else managingSessions.delete(sessionId);
         }
+        if (managing) return;
+
+        const resolved = resolveModelAndProvider(input?.model, undefined);
+        if (sessionId) sessionModels.set(sessionId, resolved);
+        const { hardStopReason } = checkBudgetStatus(
+          sessionId,
+          resolved.displayName,
+          resolved.providerId,
+          resolved.modelId,
+          resolved.fullModelKey,
+          options
+        );
+        if (hardStopReason) throw budgetStopError(hardStopReason);
       },
 
       "experimental.chat.system.transform": async (input: any, output: any) => {
@@ -588,21 +617,22 @@ export default {
         if (hardStopReason && !managing) {
           output.system.push(
             `🛑 [BUDGET LIMIT EXCEEDED: 100% HARD STOP - ${hardStopReason}]\n` +
-            `The user has reached 100% of their budget limit.\n` +
-            `You MUST immediately STOP all work, code generation, file editing, and tool execution.\n` +
-            `You MUST state clearly that the budget limit has been reached (100% hard stop) and cite that the user must use the offline terminal CLI to adjust, top-up, or disable their budget allowance:\n` +
-            `  bun run ~/.config/opencode/plugins/cli.ts\n` +
-            `Do NOT perform any coding or project tasks until the budget is updated via the CLI.`
+            `Your ENTIRE reply must be only this, even if the user said hi or asked a question:\n` +
+            `1. Cite that they have reached 100% of their budget (${hardStopReason}).\n` +
+            `2. Ask how they want to proceed. Do not continue until they choose:\n` +
+            `   • /budget daily <amount> or /budget daily +<amount> — raise today's cap\n` +
+            `   • /budget off — disable checks for this session\n` +
+            `   • /budget off global — disable checks everywhere\n` +
+            `   • bun run ~/.config/opencode/plugins/cli.ts — offline menu\n` +
+            `Do NOT greet. Do NOT answer their question. Do NOT write code or use tools.`
           );
         } else if (warningReason && !managing) {
           output.system.push(
             `⚠️ [BUDGET WARNING: 90% THRESHOLD REACHED - ${warningReason}]\n` +
-            `The user has reached 90% or more of their budget allowance.\n` +
-            `You MUST proactively warn the user about their current spend and that they are approaching their limit (${warningReason}).\n` +
-            `You MUST ask the user what they would like to do before continuing:\n` +
-            `  1. Continue working until the 100% hard stop is reached\n` +
-            `  2. Increase or adjust the budget limit using the offline CLI (bun run ~/.config/opencode/plugins/cli.ts) or /budget command\n` +
-            `  3. Disable budget limits for this session (/budget off)`
+            `Cite ${warningReason} to the user. Do not continue the task until they say how to proceed:\n` +
+            `  1. Continue until the 100% hard stop\n` +
+            `  2. /budget daily +<amount> or /budget <amount> to raise the cap\n` +
+            `  3. /budget off to disable this session`
           );
         } else {
           const parts: string[] = [];
@@ -649,9 +679,9 @@ export default {
 
         if (hardStopReason) {
           throw new Error(
-            `[Budget Limit Reached: 100% HARD STOP] Execution of tool '${input.tool}' is blocked because ${hardStopReason}.\n` +
-            `All tool actions are stopped. Please use the offline terminal CLI to adjust your budget or disable limits:\n` +
-            `  bun run ~/.config/opencode/plugins/cli.ts`
+            `[Budget Limit Reached] Tool '${input.tool}' blocked — ${hardStopReason}.\n` +
+              `  /budget daily +<amount>   /budget off   /budget off global\n` +
+              `  bun run ~/.config/opencode/plugins/cli.ts`
           );
         }
       },
@@ -942,8 +972,18 @@ export default {
 
       "chat.params": async (params: any) => {
         const sessionId = params.sessionID || (params as any).sessionId || "";
-        if (sessionId && (params.model || params.provider)) {
-          sessionModels.set(sessionId, resolveModelAndProvider(params.model, params.provider));
+        const resolved = resolveModelAndProvider(params.model, params.provider);
+        if (sessionId) sessionModels.set(sessionId, resolved);
+        if (!(sessionId && managingSessions.has(sessionId))) {
+          const { hardStopReason } = checkBudgetStatus(
+            sessionId,
+            resolved.displayName,
+            resolved.providerId,
+            resolved.modelId,
+            resolved.fullModelKey,
+            options
+          );
+          if (hardStopReason) throw budgetStopError(hardStopReason);
         }
 
         // Auto-compaction if input tokens exceed threshold

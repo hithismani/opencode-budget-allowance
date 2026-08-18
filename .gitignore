@@ -4,3 +4,4 @@ node_modules/
 
 # opencode plugin state (may contain local secrets/session data)
 .opencode/
+.temp/
